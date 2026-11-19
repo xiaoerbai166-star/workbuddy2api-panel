@@ -4,7 +4,7 @@
 
 // 从上游 internal/panel/frontend_test.go 的 TestAppJSRequestLogFormatting / TestAppJSRequestMatch 平移（期望值原样保留）。
 import { describe, expect, it } from 'vitest'
-import { cacheLevel, cacheRateText, matchRequest, outcomeLevel, requestCredit, requestLogText, type RequestFilter } from './requests'
+import { cacheLevel, cacheRateText, clusterTurns, matchRequest, outcomeLevel, requestCredit, requestLogText, summarizeRequests, type RequestFilter } from './requests'
 import type { RequestEvent } from './types'
 
 describe('请求指标', () => {
@@ -63,5 +63,69 @@ describe('请求指标', () => {
     // 账号现在的显示名（换成了备注）也能搜到，记录里的旧昵称照样能搜
     expect([base, other].filter((e) => matchRequest(e, { q: '主力', outcome: '' }, e === base ? '主力(uid8)' : '')).map((e) => e.request_id)).toEqual(['req-1'])
     expect(matchRequest(base, { q: '示例', outcome: '' }, '主力(uid8)')).toBe(true)
+  })
+})
+
+describe('请求日志聚合', () => {
+  const mk = (o: Partial<RequestEvent>): RequestEvent => ({
+    time: '', request_id: '', path: '', status: 200, ok: true, outcome: 'success',
+    duration_ms: 0, credit_known: true, ...o,
+  })
+
+  it('筛选汇总：命中/积分/发→回/缓存/失败中断/平均耗时与首字', () => {
+    const rows: RequestEvent[] = [
+      mk({ request_id: 'a', credit: 1.5, prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cache_hit_tokens: 90, cache_miss_tokens: 10, duration_ms: 1000, ttfb_ms: 200 }),
+      mk({ request_id: 'b', credit: 2.5, prompt_tokens: 200, completion_tokens: 100, total_tokens: 300, duration_ms: 3000, ttfb_ms: 800 }),
+      mk({ request_id: 'c', outcome: 'http_error', ok: false, duration_ms: 500 }),
+      mk({ request_id: 'd', outcome: 'interrupted', ok: false, duration_ms: 500 }),
+    ]
+    const s = summarizeRequests(rows)
+    expect(s.n).toBe(4)
+    expect(s.credit).toBeCloseTo(4.0)
+    expect(s.prompt).toBe(300)
+    expect(s.completion).toBe(150)
+    expect(s.total).toBe(450)
+    expect(s.cacheHit).toBe(90)
+    expect(s.failed).toBe(1)
+    expect(s.interrupted).toBe(1)
+    expect(s.avgDurationMs).toBeCloseTo((1000 + 3000 + 500 + 500) / 4)
+    expect(s.avgTtfbMs).toBeCloseTo((200 + 800) / 2)
+  })
+
+  it('会话聚类：同模型+间隔≤30分+上下文链聚成一个，不同模型分开，按总积分降序', () => {
+    const t0 = Date.parse('2026-01-01T00:00:00Z')
+    const min = 60_000
+    const rows: RequestEvent[] = [
+      mk({ request_id: 'a1', model: 'glm', time: new Date(t0).toISOString(), credit: 1, prompt_tokens: 100, completion_tokens: 100, total_tokens: 200, duration_ms: 1000, account: '甲(uid1)' }),
+      mk({ request_id: 'a2', model: 'glm', time: new Date(t0 + 10 * min).toISOString(), credit: 2, prompt_tokens: 200, completion_tokens: 200, total_tokens: 400, duration_ms: 2000, account: '乙(uid2)' }),
+      mk({ request_id: 'a3', model: 'glm', time: new Date(t0 + 20 * min).toISOString(), credit: 3, prompt_tokens: 300, completion_tokens: 300, total_tokens: 600, duration_ms: 3000, account: '甲(uid1)' }),
+      mk({ request_id: 'b1', model: 'kimi', time: new Date(t0 + 5 * min).toISOString(), credit: 10, prompt_tokens: 100, completion_tokens: 100, total_tokens: 200, duration_ms: 500 }),
+    ]
+    const turns = clusterTurns(rows)
+    expect(turns.map((t) => t.model)).toEqual(['kimi', 'glm'])
+    const glm = turns.find((t) => t.model === 'glm')!
+    expect(glm.n).toBe(3)
+    expect(glm.credit).toBeCloseTo(6)
+    expect(glm.tokens).toBe(1200)
+    expect(glm.peakDurationMs).toBe(3000)
+    expect(glm.accounts).toEqual(['乙', '甲'])
+  })
+
+  it('会话聚类：间隔超过 30 分钟或上下文链断裂会拆成新会话', () => {
+    const t0 = Date.parse('2026-01-01T00:00:00Z')
+    const min = 60_000
+    const rows: RequestEvent[] = [
+      mk({ request_id: 'x1', model: 'glm', time: new Date(t0).toISOString(), prompt_tokens: 100, completion_tokens: 100, total_tokens: 200, duration_ms: 0 }),
+      // 间隔 31 分钟 → 拆开
+      mk({ request_id: 'x2', model: 'glm', time: new Date(t0 + 31 * min).toISOString(), prompt_tokens: 200, completion_tokens: 200, total_tokens: 400, duration_ms: 0 }),
+    ]
+    expect(clusterTurns(rows)).toHaveLength(2)
+
+    // 间隔 5 分钟但 prompt 暴涨（超出上下文链上界）→ 拆开
+    const rows2: RequestEvent[] = [
+      mk({ request_id: 'y1', model: 'glm', time: new Date(t0).toISOString(), prompt_tokens: 100, completion_tokens: 100, total_tokens: 200, duration_ms: 0 }),
+      mk({ request_id: 'y2', model: 'glm', time: new Date(t0 + 5 * min).toISOString(), prompt_tokens: 999999, completion_tokens: 100, total_tokens: 1000099, duration_ms: 0 }),
+    ]
+    expect(clusterTurns(rows2)).toHaveLength(2)
   })
 })

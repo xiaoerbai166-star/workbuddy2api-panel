@@ -550,7 +550,7 @@ func Read[T any](s *Store, q Query[T]) (rows []T, more bool, err error) {
 		if day := s.dayOf(it.name); day != "" && ((lo != "" && day < lo) || (hi != "" && day > hi)) {
 			continue
 		}
-		if err := readFile(it.path, q, add); err != nil {
+		if err := scanFile(it.path, q, add); err != nil {
 			return rows, false, err
 		}
 	}
@@ -558,7 +558,7 @@ func Read[T any](s *Store, q Query[T]) (rows []T, more bool, err error) {
 	return rows, more, nil
 }
 
-func readFile[T any](path string, q Query[T], add func(T)) error {
+func scanFile[T any](path string, q Query[T], consume func(T)) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -578,9 +578,39 @@ func readFile[T any](path string, q Query[T], add func(T)) error {
 		if q.Keep != nil && !q.Keep(v) {
 			continue
 		}
-		add(v)
+		consume(v)
 	}
 	return scanner.Err()
+}
+
+// Reduce 流式累加符合条件（From/To 区间 + Keep 过滤）的全部条目，不保留行：
+// 内存占用 O(1)，查「全部历史」也不会把归档整个读进内存。用于按筛选条件做聚合统计。
+func Reduce[T any, A any](s *Store, q Query[T], init A, fold func(A, T) A) (A, error) {
+	if s == nil || s.dir == "" {
+		return init, nil
+	}
+	items, err := s.list()
+	if err != nil {
+		return init, err
+	}
+	// 与 Read 同口径：文件名的日期按条目时间的时区取，差不出一天，两侧各放宽一天再比。
+	lo, hi := "", ""
+	if !q.From.IsZero() {
+		lo = q.From.AddDate(0, 0, -1).Format(dayLayout)
+	}
+	if !q.To.IsZero() {
+		hi = q.To.AddDate(0, 0, 1).Format(dayLayout)
+	}
+	acc := init
+	for _, it := range items {
+		if day := s.dayOf(it.name); day != "" && ((lo != "" && day < lo) || (hi != "" && day > hi)) {
+			continue
+		}
+		if err := scanFile(it.path, q, func(v T) { acc = fold(acc, v) }); err != nil {
+			return acc, err
+		}
+	}
+	return acc, nil
 }
 
 // Stats 存储状态：文件数、总大小、最早那份的日期，以及丢弃数和最近的错误。

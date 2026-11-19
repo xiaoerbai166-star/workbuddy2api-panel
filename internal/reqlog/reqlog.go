@@ -13,6 +13,7 @@ package reqlog
 import (
 	"crypto/rand"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -103,8 +104,11 @@ type Filter struct {
 	ClientIP  string
 	UserAgent string
 	APIKey    string
-	From      time.Time
-	To        time.Time
+	// Q 关键字：对 IP/UA/模型/账号/代理/密钥/失败原因/请求ID 做包含匹配，空格分词后逐个 AND。
+	// 与前端 matchRequest 的 q 同语义（少了「账号现在显示名」这一列，其余一致）。
+	Q    string
+	From time.Time
+	To   time.Time
 }
 
 // ArchiveStats 归档存储状态。
@@ -269,6 +273,214 @@ func (r *Recorder) Close() {
 	r.archive.Close()
 }
 
+// clusterReadMax 会话聚类读近 N 天的归档条数上限：本机日请求量几百到几千，3 天远够；
+// 上限兜底防极端情况把几十 MiB 归档整个读进内存。
+const clusterReadMax = 100000
+
+// Summary 按筛选条件聚合的请求统计（对应面板「请求记录」的筛选汇总条与 7864 sidecar 的 fsum）。
+// 统计全部命中行，不受 ReadArchive 的条数上限影响。
+type Summary struct {
+	N             int64   `json:"n"`
+	Credit        float64 `json:"credit"`
+	Prompt        int64   `json:"prompt"`
+	Completion    int64   `json:"completion"`
+	Total         int64   `json:"total"`
+	CacheHit      int64   `json:"cacheHit"`
+	Failed        int64   `json:"failed"`
+	Interrupted   int64   `json:"interrupted"`
+	AvgDurationMs float64 `json:"avgDurationMs"`
+	AvgTtfbMs     float64 `json:"avgTtfbMs"`
+}
+
+// Turn 会话级消耗聚合（启发式，见 ClusterTurns）。
+type Turn struct {
+	Model          string    `json:"model"`
+	First          time.Time `json:"first"`
+	Last           time.Time `json:"last"`
+	Credit         float64   `json:"credit"`
+	N              int       `json:"n"`
+	Tokens         int64     `json:"tokens"`
+	PeakDurationMs int64     `json:"peakDurationMs"`
+	Accounts       []string  `json:"accounts"`
+}
+
+// Summarize 流式扫描归档，按 filter 聚合全部命中行（O(1) 内存，不受条数上限影响）。
+// 归档关着时返回零值 Summary。
+func (r *Recorder) Summarize(filter Filter) (Summary, error) {
+	if r == nil || !r.archive.Enabled() {
+		return Summary{}, nil
+	}
+	type acc struct {
+		n, prompt, completion, total, cacheHit, failed, interrupted int64
+		credit                                                        float64
+		durSum, ttfbSum, ttfbN                                        int64
+	}
+	a, err := logarchive.Reduce(r.archive, logarchive.Query[Event]{
+		From: filter.From, To: filter.To,
+		Time: func(e Event) time.Time { return e.Time },
+		Keep: filter.match,
+	}, acc{}, func(a acc, e Event) acc {
+		a.n++
+		a.credit += e.Credit
+		a.prompt += e.PromptTokens
+		a.completion += e.CompletionTokens
+		a.total += e.TotalTokens
+		a.cacheHit += e.CacheHitTokens
+		if e.Outcome == OutcomeHTTPError || e.Outcome == OutcomeStreamError {
+			a.failed++
+		} else if e.Outcome == OutcomeInterrupted {
+			a.interrupted++
+		}
+		a.durSum += e.DurationMs
+		if e.TTFBMs > 0 {
+			a.ttfbSum += e.TTFBMs
+			a.ttfbN++
+		}
+		return a
+	})
+	if err != nil {
+		return Summary{}, err
+	}
+	s := Summary{
+		N: a.n, Credit: a.credit, Prompt: a.prompt, Completion: a.completion,
+		Total: a.total, CacheHit: a.cacheHit, Failed: a.failed, Interrupted: a.interrupted,
+	}
+	if a.n > 0 {
+		s.AvgDurationMs = float64(a.durSum) / float64(a.n)
+	}
+	if a.ttfbN > 0 {
+		s.AvgTtfbMs = float64(a.ttfbSum) / float64(a.ttfbN)
+	}
+	return s, nil
+}
+
+// ClusterTurns 读最近 days 天归档，做会话级启发式聚类（同模型 + 间隔≤30 分钟 + 上下文链），
+// 返回按总积分降序的前 top 个会话。对应 7864 sidecar 的 _cluster_turns 与前端 lib/requests.ts
+// 的 clusterTurns；Agent 任务工具循环耗时长，窗口放宽到 30 分钟级，相邻对话上下文相似时可能
+// 粘连，结果为估算。
+func (r *Recorder) ClusterTurns(days, top int) ([]Turn, error) {
+	if r == nil || !r.archive.Enabled() {
+		return nil, nil
+	}
+	if days <= 0 {
+		days = 3
+	}
+	if top <= 0 {
+		top = 20
+	}
+	from := time.Now().AddDate(0, 0, -days)
+	rows, _, err := logarchive.Read(r.archive, logarchive.Query[Event]{
+		Limit: clusterReadMax,
+		From:  from,
+		Time:  func(e Event) time.Time { return e.Time },
+	})
+	if err != nil {
+		return nil, err
+	}
+	// 聚类要求按时间正序（Read 返回倒序）。
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Time.Before(rows[j].Time) })
+
+	type row struct {
+		epoch      int64
+		model      string
+		acc        string
+		credit     float64
+		prompt     int64
+		completion int64
+		tokens     int64
+		duration   int64
+	}
+	rs := make([]row, 0, len(rows))
+	for _, e := range rows {
+		rs = append(rs, row{
+			epoch: e.Time.UnixMilli(), model: e.Model, acc: accountShort(e.Account),
+			credit: e.Credit, prompt: e.PromptTokens, completion: e.CompletionTokens,
+			tokens: e.TotalTokens, duration: e.DurationMs,
+		})
+	}
+
+	type turn struct {
+		model  string
+		lastT  int64
+		lastP  int64
+		lastC  int64
+		credit float64
+		tokens int64
+		peak   int64
+		reqs   []row
+	}
+	const gapMs = 1800 * 1000
+	turns := make([]turn, 0)
+	for _, rr := range rs {
+		placed := false
+		start := len(turns) - 20
+		if start < 0 {
+			start = 0
+		}
+		for i := len(turns) - 1; i >= start; i-- {
+			t := &turns[i]
+			if t.model != rr.model || rr.epoch-t.lastT > gapMs || t.lastP == 0 {
+				continue
+			}
+			lo := float64(t.lastP) * 0.1
+			hi := float64(t.lastP) + float64(t.lastC)*3 + 50000
+			if float64(rr.prompt) < lo || float64(rr.prompt) > hi {
+				continue
+			}
+			t.reqs = append(t.reqs, rr)
+			t.lastT, t.lastP, t.lastC = rr.epoch, rr.prompt, rr.completion
+			t.credit += rr.credit
+			t.tokens += rr.tokens
+			if rr.duration > t.peak {
+				t.peak = rr.duration
+			}
+			placed = true
+			break
+		}
+		if !placed {
+			turns = append(turns, turn{
+				model: rr.model, lastT: rr.epoch, lastP: rr.prompt, lastC: rr.completion,
+				credit: rr.credit, tokens: rr.tokens, peak: rr.duration, reqs: []row{rr},
+			})
+		}
+	}
+
+	out := make([]Turn, 0, len(turns))
+	for _, t := range turns {
+		seen := make(map[string]bool, len(t.reqs))
+		accs := make([]string, 0)
+		for _, rr := range t.reqs {
+			if !seen[rr.acc] {
+				seen[rr.acc] = true
+				accs = append(accs, rr.acc)
+			}
+		}
+		sort.Strings(accs)
+		out = append(out, Turn{
+			Model: t.model, First: time.UnixMilli(t.reqs[0].epoch), Last: time.UnixMilli(t.reqs[len(t.reqs)-1].epoch),
+			Credit: t.credit, N: len(t.reqs), Tokens: t.tokens,
+			PeakDurationMs: t.peak, Accounts: accs,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Credit > out[j].Credit })
+	if len(out) > top {
+		out = out[:top]
+	}
+	return out, nil
+}
+
+// accountShort 账号显示名去 uid 后缀：昵称(uid8) → 昵称；空账号回「?」。与前端 clusterTurns
+// 的 acc = (account||'?').split('(')[0] 同口径。
+func accountShort(acc string) string {
+	if acc == "" {
+		return "?"
+	}
+	if i := strings.IndexByte(acc, '('); i >= 0 {
+		return acc[:i]
+	}
+	return acc
+}
+
 func round1(v float64) float64 {
 	return float64(int(v*10+0.5)) / 10
 }
@@ -276,6 +488,14 @@ func round1(v float64) float64 {
 func (f Filter) match(e Event) bool {
 	if f.Outcome != "" && e.Outcome != f.Outcome {
 		return false
+	}
+	if f.Q != "" {
+		text := strings.Join([]string{e.ClientIP, e.UserAgent, e.Model, e.Account, e.Proxy, e.APIKey, e.Error, e.RequestID}, " ")
+		for _, kw := range strings.Fields(strings.ToLower(f.Q)) {
+			if !strings.Contains(strings.ToLower(text), kw) {
+				return false
+			}
+		}
 	}
 	if !containsFold(e.Account, f.Account) {
 		return false

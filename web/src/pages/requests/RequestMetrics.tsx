@@ -8,8 +8,8 @@
 // 归档开着时按时间范围与条数从 JSONL 归档读；关键字与结果筛选只在已读到的条目上做，不发新请求。
 import { useMemo, useState } from 'react'
 import { Chip, Label, ListBox, SearchField, Select, Table, useMediaQuery } from '@heroui/react'
-import { dayClock, fmtMs, fmtTok } from '../../lib/format'
-import { useAccountNames, useRequestMetrics } from '../../lib/queries'
+import { dayClock, fmtCredit, fmtMs, fmtTok } from '../../lib/format'
+import { useAccountNames, useRequestMetrics, useRequestSummary, useRequestTurns } from '../../lib/queries'
 import {
   OUTCOME_LABEL, cacheRateText, matchRequest, outcomeLevel, requestCredit, requestLogText, requestTokens,
 } from '../../lib/requests'
@@ -47,18 +47,32 @@ function Outcome({ e }: { e: RequestEvent }) {
   )
 }
 
-/** Token 数；上游返回了前缀缓存时下面带一行命中率 */
+/** Token 数；上游返回了发→回拆分时下面带一行，命中率再一行 */
 function Tokens({ e }: { e: RequestEvent }) {
   const cache = cacheRateText(e.cache_hit_tokens, e.cache_miss_tokens)
+  const p = Number(e.prompt_tokens || 0)
+  const c = Number(e.completion_tokens || 0)
   return (
     <span className="inline-flex flex-col items-end">
       {fmtTok(requestTokens(e))}
+      {(p > 0 || c > 0) && <span className="whitespace-nowrap text-xs text-muted">发 {fmtTok(p)} → 回 {fmtTok(c)}</span>}
       {cache !== '—' && <span className="whitespace-nowrap text-xs text-muted">命中 {cache}</span>}
     </span>
   )
 }
 
 const dash = <span className="text-muted">—</span>
+
+const p2 = (n: number) => String(n).padStart(2, '0')
+/** 会话时间段：MM-DD HH:MM:SS ~ HH:MM:SS（跨天在末尾补日期） */
+function spanLabel(a: number, b: number): string {
+  const f = (ms: number) => {
+    const d = new Date(ms)
+    return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`
+  }
+  const fa = f(a), fb = f(b)
+  return fa.slice(0, 5) === fb.slice(0, 5) ? `${fa} ~ ${fb.slice(11)}` : `${fa} ~ ${fb}`
+}
 
 export function RequestMetrics() {
   const names = useAccountNames()
@@ -72,6 +86,9 @@ export function RequestMetrics() {
   const m = d?.metrics ?? null
   const all = useMemo(() => d?.recent ?? [], [d])
   const shown = useMemo(() => all.filter((e) => matchRequest(e, { q, outcome }, e.account && names.label(e.account))), [all, q, outcome, names])
+  // 筛选汇总与会话 TOP 走后端聚合：汇总统计全部命中行（不受条数上限）、会话 TOP 读近 3 天全量
+  const sum = useRequestSummary(range, q, outcome).data ?? null
+  const turns = useRequestTurns().data ?? []
   // 归档里早于「调用来源」功能的条目没有来源字段：提示一句，免得以为筛选坏了
   const hasSource = all.some((e) => e.client_ip || e.user_agent)
   const count = !all.length ? '' : (shown.length !== all.length ? `命中 ${shown.length} / ${all.length} 条` : `${all.length} 条`) + (hasSource ? '' : ' · 来源未记录')
@@ -125,7 +142,58 @@ export function RequestMetrics() {
         )}
         {count && <span className={`text-sm sm:ml-auto ${shown.length !== all.length || !hasSource ? 'text-warning' : 'text-muted'}`}>{count}</span>}
       </div>
+      {sum && sum.n > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="font-semibold">筛选汇总</span>
+          <Chip size="sm" variant="soft">命中 {fmtTok(sum.n)} 条</Chip>
+          <Chip size="sm" variant="soft" color="danger">积分 -{fmtCredit(sum.credit)}</Chip>
+          <span className="text-muted">tokens {fmtTok(sum.total)}（发 {fmtTok(sum.prompt)} → 回 {fmtTok(sum.completion)}）</span>
+          {sum.cacheHit > 0 && <span className="text-muted">缓存命中 {fmtTok(sum.cacheHit)} tok</span>}
+          {(sum.failed > 0 || sum.interrupted > 0) && <span className="text-warning">失败 {sum.failed} · 中断 {sum.interrupted}</span>}
+          <span className="text-muted">平均耗时 {fmtMs(sum.avgDurationMs)} · 首字 {sum.avgTtfbMs > 0 ? fmtMs(sum.avgTtfbMs) : '—'}</span>
+          <span className="text-muted">口径 = 当前筛选 · 全部命中（不受条数上限）</span>
+        </div>
+      )}
       {d?.archiveError && <ErrorBox title="读取请求归档失败" error={d.archiveError} onRetry={() => void query.refetch()} />}
+      {turns.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <div className="text-sm font-semibold">
+            会话消耗 TOP {turns.length}
+            <span className="ml-2 font-normal text-muted">近 3 天全量聚类 · 数值为估算</span>
+          </div>
+          <Table variant="secondary">
+            <Table.ScrollContainer className="max-h-[40dvh] overflow-y-auto">
+              <Table.Content aria-label="会话消耗" className="min-w-[900px]">
+                <Table.Header className="sticky top-0 z-10 bg-surface">
+                  <Table.Column>时间段</Table.Column>
+                  <Table.Column className="text-right">积分</Table.Column>
+                  <Table.Column>模型</Table.Column>
+                  <Table.Column className="text-right">次数</Table.Column>
+                  <Table.Column className="text-right">tokens</Table.Column>
+                  <Table.Column className="text-right">峰值耗时</Table.Column>
+                  <Table.Column>涉及账号</Table.Column>
+                </Table.Header>
+                <Table.Body>
+                  {turns.map((t) => (
+                    <Table.Row key={t.first + ':' + t.model}>
+                      <Table.Cell className="whitespace-nowrap font-mono text-xs">{spanLabel(t.first, t.last)}</Table.Cell>
+                      <Table.Cell className="text-right font-mono tabular-nums text-danger">-{fmtCredit(t.credit)}</Table.Cell>
+                      <Table.Cell className="whitespace-nowrap font-mono">{t.model}</Table.Cell>
+                      <Table.Cell className="text-right font-mono tabular-nums">{t.n} 次</Table.Cell>
+                      <Table.Cell className="text-right font-mono tabular-nums">{fmtTok(t.tokens)} tok</Table.Cell>
+                      <Table.Cell className="text-right font-mono tabular-nums">{fmtMs(t.peakDurationMs)}</Table.Cell>
+                      <Table.Cell>
+                        {t.accounts[0] || '—'}
+                        {t.accounts.length > 1 && <span className="text-xs text-muted"> 等 {t.accounts.length} 个号</span>}
+                      </Table.Cell>
+                    </Table.Row>
+                  ))}
+                </Table.Body>
+              </Table.Content>
+            </Table.ScrollContainer>
+          </Table>
+        </div>
+      )}
       <Loaded query={query} rows={4}>
         {() => shown.length === 0 ? <Empty title={all.length ? '没有符合当前筛选条件的请求记录' : '暂无请求记录'} /> : isDesktop ? (
           <Table variant="secondary">
@@ -163,7 +231,10 @@ export function RequestMetrics() {
                       <Table.Cell>
                         {e.user_agent ? <Hint tip={e.user_agent} className="block max-w-56 truncate text-xs">{e.user_agent}</Hint> : dash}
                       </Table.Cell>
-                      <Table.Cell className="text-right font-mono tabular-nums">{fmtMs(e.duration_ms)}</Table.Cell>
+                      <Table.Cell className="text-right font-mono tabular-nums">
+                        {fmtMs(e.duration_ms)}
+                        {e.ttfb_ms != null && e.ttfb_ms > 0 && <div className="text-xs text-muted">首字 {fmtMs(e.ttfb_ms)}</div>}
+                      </Table.Cell>
                       <Table.Cell className="text-right font-mono tabular-nums"><Tokens e={e} /></Table.Cell>
                       <Table.Cell className="whitespace-nowrap text-right font-mono tabular-nums">{e.credit_known ? requestCredit(e).replace(' credit', '') : '—'}</Table.Cell>
                       <Table.Cell><span className="select-all font-mono text-xs text-muted">{e.request_id || '—'}</span></Table.Cell>
@@ -189,8 +260,8 @@ export function RequestMetrics() {
                   {e.api_key && <span className="text-muted">密钥 {e.api_key}</span>}
                 </div>
                 <div className="flex flex-wrap gap-x-3 text-xs text-muted tabular-nums">
-                  <span>{fmtMs(e.duration_ms)}</span>
-                  <span>{fmtTok(requestTokens(e))} tok</span>
+                  <span>{fmtMs(e.duration_ms)}{e.ttfb_ms != null && e.ttfb_ms > 0 && ` · 首字 ${fmtMs(e.ttfb_ms)}`}</span>
+                  <span>{fmtTok(requestTokens(e))} tok{(Number(e.prompt_tokens || 0) > 0 || Number(e.completion_tokens || 0) > 0) && `（发 ${fmtTok(Number(e.prompt_tokens || 0))} → 回 ${fmtTok(Number(e.completion_tokens || 0))}）`}</span>
                   {cacheRateText(e.cache_hit_tokens, e.cache_miss_tokens) !== '—' && <span>命中 {cacheRateText(e.cache_hit_tokens, e.cache_miss_tokens)}</span>}
                   <span>{requestCredit(e)}</span>
                 </div>

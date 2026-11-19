@@ -213,6 +213,8 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/log_storage/{kind}/clear", p.withAuth(p.logStorageClear))
 	p.mux.HandleFunc("GET /panel/api/request_metrics", p.withAuth(p.requestMetrics))
 	p.mux.HandleFunc("GET /panel/api/request_logs", p.withAuth(p.requestLogs))
+	p.mux.HandleFunc("GET /panel/api/request_summary", p.withAuth(p.requestSummary))
+	p.mux.HandleFunc("GET /panel/api/request_turns", p.withAuth(p.requestTurns))
 	p.mux.HandleFunc("GET /panel/api/credit_log", p.withAuth(p.creditLog))
 	p.mux.HandleFunc("GET /panel/api/models", p.withAuth(p.models))
 	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
@@ -429,6 +431,67 @@ func (p *Panel) requestLogs(w http.ResponseWriter, r *http.Request) {
 		rows = []reqlog.Event{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"entries": rows, "limit": limit})
+}
+
+// requestSummary 按筛选条件聚合归档全部命中行（积分/token/失败/中断/平均耗时/平均首字），
+// 不受条数上限影响——面板「请求记录」的筛选汇总条走这里，筛选口径与 request_logs 完全一致。
+func (p *Panel) requestSummary(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.RequestLog == nil {
+		writeErr(w, http.StatusNotImplemented, "request logger not available")
+		return
+	}
+	q := r.URL.Query()
+	s, err := p.cfg.RequestLog.Summarize(reqlog.Filter{
+		Outcome:   q.Get("outcome"),
+		Account:   q.Get("account"),
+		Model:     q.Get("model"),
+		ClientIP:  q.Get("client_ip"),
+		UserAgent: q.Get("user_agent"),
+		APIKey:    q.Get("api_key"),
+		Q:         q.Get("q"),
+		From:      parseTimeParam(q.Get("from")),
+		To:        parseTimeParam(q.Get("to")),
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
+// requestTurns 会话级消耗聚合：近 days 天（默认 3、上限 30）启发式聚类，按总积分降序
+// 返回前 top（默认 20、上限 100）个会话——面板「请求记录」的会话消耗 TOP 走这里。
+func (p *Panel) requestTurns(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.RequestLog == nil {
+		writeErr(w, http.StatusNotImplemented, "request logger not available")
+		return
+	}
+	days, top := 3, 20
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			days = n
+		}
+	}
+	if v := r.URL.Query().Get("top"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			top = n
+		}
+	}
+	if days > 30 {
+		days = 30
+	}
+	if top > 100 {
+		top = 100
+	}
+	turns, err := p.cfg.RequestLog.ClusterTurns(days, top)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if turns == nil {
+		turns = []reqlog.Turn{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"turns": turns})
 }
 
 // models 实时查询上游模型列表与 reasoning 实际档位（直连上游，不读路由层 1h 缓存）：

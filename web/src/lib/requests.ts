@@ -85,3 +85,135 @@ export function matchRequest(e: RequestEvent, f: RequestFilter, account = ''): b
   const text = [e.client_ip, e.user_agent, e.model, e.account, account, e.proxy, e.api_key, e.error, e.request_id].filter(Boolean).join(' ').toLowerCase()
   return kws.every((kw) => text.includes(kw))
 }
+
+// ---- 请求日志聚合（对齐 7864 sidecar 的「筛选汇总条」与「会话消耗 TOP」）----
+
+/** 筛选汇总：对一组请求做聚合。credit 只累计上游明确返回的（字段缺失按 0，与 7864 口径一致）。 */
+export interface RequestSummary {
+  n: number
+  credit: number
+  prompt: number
+  completion: number
+  total: number
+  cacheHit: number
+  failed: number
+  interrupted: number
+  avgDurationMs: number
+  avgTtfbMs: number
+}
+
+export function summarizeRequests(es: RequestEvent[]): RequestSummary {
+  const s: RequestSummary = {
+    n: 0, credit: 0, prompt: 0, completion: 0, total: 0, cacheHit: 0,
+    failed: 0, interrupted: 0, avgDurationMs: 0, avgTtfbMs: 0,
+  }
+  let durSum = 0, ttfbSum = 0, ttfbN = 0
+  for (const e of es) {
+    s.n++
+    s.credit += Number(e.credit || 0)
+    s.prompt += Number(e.prompt_tokens || 0)
+    s.completion += Number(e.completion_tokens || 0)
+    s.total += Number(e.total_tokens || 0)
+    s.cacheHit += Number(e.cache_hit_tokens || 0)
+    if (e.outcome === 'http_error' || e.outcome === 'stream_error') s.failed++
+    else if (e.outcome === 'interrupted') s.interrupted++
+    durSum += Number(e.duration_ms || 0)
+    if (e.ttfb_ms != null && e.ttfb_ms > 0) { ttfbSum += e.ttfb_ms; ttfbN++ }
+  }
+  s.avgDurationMs = s.n ? durSum / s.n : 0
+  s.avgTtfbMs = ttfbN ? ttfbSum / ttfbN : 0
+  return s
+}
+
+/** 会话级消耗聚合（启发式）：同模型 + 间隔≤gapSec + 上下文链，估算一次对话的总消耗。
+ *  对应 WorkBuddy 客户端一个项目/会话跑完全程的消耗——Agent 任务工具循环耗时长，
+ *  窗口放宽到 30 分钟级；相邻对话上下文相似时可能粘连，结果为估算。 */
+export interface TurnCluster {
+  model: string
+  first: number
+  last: number
+  credit: number
+  n: number
+  tokens: number
+  peakDurationMs: number
+  accounts: string[]
+}
+
+export function clusterTurns(es: RequestEvent[], gapSec = 1800): TurnCluster[] {
+  type Row = {
+    epoch: number
+    model: string
+    acc: string
+    credit: number
+    prompt: number
+    completion: number
+    tokens: number
+    duration: number
+  }
+  const rows: Row[] = []
+  for (const e of es) {
+    const epoch = e.time ? new Date(e.time).getTime() : 0
+    if (!Number.isFinite(epoch) || epoch <= 0) continue
+    rows.push({
+      epoch,
+      model: e.model || '?',
+      acc: (e.account || '?').split('(')[0],
+      credit: Number(e.credit || 0),
+      prompt: Number(e.prompt_tokens || 0),
+      completion: Number(e.completion_tokens || 0),
+      tokens: Number(e.total_tokens || 0),
+      duration: Number(e.duration_ms || 0),
+    })
+  }
+  rows.sort((a, b) => a.epoch - b.epoch)
+
+  type Turn = {
+    model: string
+    lastT: number
+    lastP: number
+    lastC: number
+    credit: number
+    tokens: number
+    peak: number
+    reqs: Row[]
+  }
+  const turns: Turn[] = []
+  for (const r of rows) {
+    let placed = false
+    for (let i = turns.length - 1; i >= Math.max(0, turns.length - 20); i--) {
+      const t = turns[i]
+      if (t.model !== r.model || r.epoch - t.lastT > gapSec * 1000 || !t.lastP) continue
+      const lo = t.lastP * 0.1
+      const hi = t.lastP + t.lastC * 3 + 50000
+      if (r.prompt < lo || r.prompt > hi) continue
+      t.reqs.push(r)
+      t.lastT = r.epoch
+      t.lastP = r.prompt
+      t.lastC = r.completion
+      t.credit += r.credit
+      t.tokens += r.tokens
+      t.peak = Math.max(t.peak, r.duration)
+      placed = true
+      break
+    }
+    if (!placed) {
+      turns.push({
+        model: r.model, lastT: r.epoch, lastP: r.prompt, lastC: r.completion,
+        credit: r.credit, tokens: r.tokens, peak: r.duration, reqs: [r],
+      })
+    }
+  }
+
+  return turns
+    .map((t) => ({
+      model: t.model,
+      first: t.reqs[0].epoch,
+      last: t.reqs[t.reqs.length - 1].epoch,
+      credit: t.credit,
+      n: t.reqs.length,
+      tokens: t.tokens,
+      peakDurationMs: t.peak,
+      accounts: Array.from(new Set(t.reqs.map((r) => r.acc))).sort(),
+    }))
+    .sort((a, b) => b.credit - a.credit)
+}

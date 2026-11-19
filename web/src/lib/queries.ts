@@ -16,6 +16,7 @@ import type {
   CompensationResp, ConfigResp, CreditLogResp, GroupsResp, KeysResp, LogArchiveResp, LogEntry, LogStorage, Model, Overview, PackageAccount, ProbesResp, ProxiesResp, QueueState,
   RequestEvent, RequestMetrics, Task, UsageResp, VersionResp, VoucherAccount,
 } from './types'
+import type { RequestSummary, TurnCluster } from './requests'
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -152,6 +153,32 @@ export function useRecentRequests() {
     queryKey: qk.recentRequests,
     queryFn: () => api<RequestMetrics>('request_metrics').then((m) => m.recent || []),
     refetchInterval: 30_000,
+  })
+}
+
+/** 筛选汇总：按当前筛选（q/outcome/时间范围）聚合归档**全部命中行**，不受条数上限影响——
+ * 页面顶部「筛选汇总」条走这里；归档关着或读失败回 null（页面隐藏该条）。 */
+export function useRequestSummary(range: TimeRange, q: string, outcome: string) {
+  return useQuery({
+    queryKey: ['request_summary', rangeKey(range), q, outcome],
+    queryFn: () => {
+      const qs = rangeQuery(range, false)
+      if (q) qs.set('q', q)
+      if (outcome) qs.set('outcome', outcome)
+      return api<RequestSummary>('request_summary?' + qs.toString()).catch((): RequestSummary | null => null)
+    },
+    refetchInterval: 5000,
+  })
+}
+
+/** 会话消耗 TOP：近 days 天（默认 3）全量启发式聚类，按积分降序前 top（默认 20）个——数值为估算 */
+export function useRequestTurns(days = 3, top = 20) {
+  return useQuery({
+    queryKey: ['request_turns', days, top],
+    queryFn: () => api<{ turns: TurnCluster[] }>(`request_turns?days=${days}&top=${top}`)
+      .then((r) => r.turns ?? [])
+      .catch(() => [] as TurnCluster[]),
+    refetchInterval: 5000,
   })
 }
 
