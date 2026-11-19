@@ -985,6 +985,8 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]row, len(accts))
 
+	arch := loadPkgArchive(p.pkgArchivePath())
+
 	sem := make(chan struct{}, 3)
 	var wg sync.WaitGroup
 	for i, s := range accts {
@@ -1007,13 +1009,15 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 				out[i] = it
 				return
 			}
-			it.Packages = packs
+			// 合并包存档：live 包刷新快照，上游已消失的历史包补回（Arch 标记）
+			it.Packages = arch.merge(s.UID, packs)
 			it.Remain = remain
 			it.Size = size
 			out[i] = it
 		}(i, s)
 	}
 	wg.Wait()
+	_ = arch.save()
 
 	// 余额降序：多的在前，便于和少的对比。
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Remain > out[j].Remain })

@@ -7,6 +7,7 @@ package panel
 import (
 	"bufio"
 	"encoding/json"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +30,29 @@ type WBchat struct {
 	Credit  float64 `json:"credit"`
 	Tokens  int64   `json:"tokens"`
 	Models  string  `json:"models"`
+	// 回合明细（对齐 7864 _parse_wb_chat：一次提问→执行→完成 = 一个回合，截最近 40 轮）
+	NTurns int      `json:"n_turns"`
+	Turns  []WBTurn `json:"turns"`
+	LastQ  string   `json:"last_q,omitempty"`
+	LastCr float64  `json:"last_cr,omitempty"`
+}
+
+// WBTurn 一个回合的记账：首问、消耗、请求数、起止、token、逐模型拆分。
+type WBTurn struct {
+	Q      string      `json:"q"`
+	Credit float64     `json:"cr"`
+	N      int         `json:"n"`
+	T0     int64       `json:"t0"` // epoch 秒
+	T1     int64       `json:"t1"` // epoch 秒
+	Tok    int64       `json:"tok"`
+	Models []TurnModel `json:"ms,omitempty"`
+}
+
+// TurnModel 回合内逐模型拆分（同源 providerData，供 hover 弹层）。
+type TurnModel struct {
+	Model  string  `json:"m"`
+	Credit float64 `json:"cr"`
+	Tok    int64   `json:"tok"`
 }
 
 // wbchatProjectsDir 返回 WorkBuddy 客户端会话根目录；找不到用户主目录返回空。
@@ -104,45 +128,113 @@ func parseWBchat(fp, project string) *WBchat {
 
 	c := &WBchat{CID: strings.TrimSuffix(filepath.Base(fp), ".jsonl"), Project: project}
 	modelSet := map[string]bool{}
+
+	// 回合状态（对齐 7864 _parse_wb_chat：一次提问→执行→完成 = 一个回合）
+	type turnAcc struct {
+		q   string
+		cr  float64
+		n   int
+		tok int64
+		t0  int64 // epoch ms
+		t1  int64 // epoch ms
+		ms  map[string]*TurnModel
+	}
+	cur := &turnAcc{ms: map[string]*TurnModel{}}
+	var turns []WBTurn
+	closeTurn := func() {
+		if cur.n > 0 || cur.q != "" {
+			q := cur.q
+			if q == "" {
+				q = "（注入/续聊回合）"
+			}
+			t := WBTurn{Q: q, Credit: round2(cur.cr), N: cur.n, Tok: cur.tok}
+			if cur.t0 > 0 {
+				t.T0 = cur.t0 / 1000
+				t.T1 = cur.t1 / 1000
+			}
+			for _, m := range cur.ms {
+				t.Models = append(t.Models, *m)
+			}
+			sort.Slice(t.Models, func(i, j int) bool { return t.Models[i].Credit > t.Models[j].Credit })
+			turns = append(turns, t)
+		}
+		cur = &turnAcc{ms: map[string]*TurnModel{}}
+	}
+
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64<<10), 4<<20)
-	lineNo := 0
 	for sc.Scan() {
 		line := sc.Bytes()
 		ls := string(line)
-		lineNo++
-		if strings.Contains(ls, "rawUsage") {
-			var d wbchatLine
-			if json.Unmarshal(line, &d) != nil {
-				continue
-			}
-			ts := int64(d.Timestamp)
-			if ts > 0 {
-				if c.Start == 0 || ts < c.Start {
-					c.Start = ts
-				}
-				if ts > c.End {
-					c.End = ts
-				}
-			}
-			ru := d.ProviderData.RawUsage
-			if ru.Credit != 0 || ru.TotalTokens != 0 {
-				c.Credit += ru.Credit
-				c.Tokens += ru.TotalTokens
-				c.Req++
-				if m := d.ProviderData.Model; m != "" {
-					modelSet[m] = true
-				}
-			}
+		// 行级预过滤（对齐 7864）：只解析含计费/角色/回合标记的行，跳过体积最大的快照行。
+		if !strings.Contains(ls, "rawUsage") && !strings.Contains(ls, "role") && !strings.Contains(ls, "startsNewUserRequest") {
 			continue
 		}
-		// 标题：只在开头 200 行内找第一条真实用户提问，之后不再看。
-		if c.Title == "" && lineNo <= 200 {
-			if t := jsonMaybeUserText(line); t != "" {
-				c.Title = t
+		var d wbchatLine
+		if json.Unmarshal(line, &d) != nil {
+			continue
+		}
+		ts := int64(d.Timestamp)
+		if ts > 0 {
+			if c.Start == 0 || ts < c.Start {
+				c.Start = ts
+			}
+			if ts > c.End {
+				c.End = ts
+			}
+		}
+		ru := d.ProviderData.RawUsage
+		if ru.Credit != 0 || ru.TotalTokens != 0 {
+			c.Credit += ru.Credit
+			c.Tokens += ru.TotalTokens
+			c.Req++
+			if m := d.ProviderData.Model; m != "" {
+				modelSet[m] = true
+			}
+			// 回合累计
+			cur.cr += ru.Credit
+			cur.n++
+			cur.tok += ru.TotalTokens
+			if ts > 0 {
+				if cur.t0 == 0 || ts < cur.t0 {
+					cur.t0 = ts
+				}
+				if ts > cur.t1 {
+					cur.t1 = ts
+				}
+			}
+			if m := d.ProviderData.Model; m != "" {
+				slot, ok := cur.ms[m]
+				if !ok {
+					slot = &TurnModel{Model: m}
+					cur.ms[m] = slot
+				}
+				slot.Credit += ru.Credit
+				slot.Tok += ru.TotalTokens
+			}
+		}
+		// user 消息 + startsNewUserRequest → 上一回合结束，这轮从本条消息开始。
+		if d.Type == "message" && d.Role == "user" {
+			if d.ProviderData.StartsNewUserRequest {
+				closeTurn()
+			}
+			for _, cont := range d.Content {
+				if cont.Type == "input_text" {
+					t := strings.TrimSpace(cont.Text)
+					if t != "" && !strings.HasPrefix(t, "<") && !strings.HasPrefix(t, "cmd:") && !strings.HasPrefix(t, "tool:") {
+						if c.Title == "" {
+							c.Title = truncateRunes(t, 90)
+						}
+						if cur.q == "" {
+							cur.q = truncateRunes(t, 90)
+						}
+						break
+					}
+				}
 			}
 		}
 	}
+	closeTurn()
 	if c.Req == 0 && c.Title == "" {
 		return nil
 	}
@@ -158,34 +250,22 @@ func parseWBchat(fp, project string) *WBchat {
 	if c.Title == "" {
 		c.Title = "（未识别首问）"
 	}
+	// 回合明细：截最近 40 轮。
+	if len(turns) > 40 {
+		turns = turns[len(turns)-40:]
+	}
+	c.NTurns = len(turns)
+	c.Turns = turns
+	if len(turns) > 0 {
+		c.LastQ = turns[len(turns)-1].Q
+		c.LastCr = turns[len(turns)-1].Credit
+	}
 	return c
 }
 
-// jsonMaybeUserText 尝试从一行里提取 user 消息的首条 input_text；非 user 消息或解析失败返回空。
-// 只对标题候选行调用（前 200 行），次数受控。
-func jsonMaybeUserText(line []byte) string {
-	if !strings.Contains(string(line), "input_text") {
-		return ""
-	}
-	var d struct {
-		Role    string `json:"role"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if json.Unmarshal(line, &d) != nil || d.Role != "user" {
-		return ""
-	}
-	for _, c := range d.Content {
-		if c.Type == "input_text" {
-			t := strings.TrimSpace(c.Text)
-			if t != "" && !strings.HasPrefix(t, "<") && !strings.HasPrefix(t, "cmd:") && !strings.HasPrefix(t, "tool:") {
-				return truncateRunes(t, 90)
-			}
-		}
-	}
-	return ""
+// round2 保留两位小数（对齐 7864 round(x, 2)）。
+func round2(x float64) float64 {
+	return math.Round(x*100) / 100
 }
 
 // wbchat 扫描结果缓存：projects 与 wbchats 共用，60 秒内复用避免重复全量扫描

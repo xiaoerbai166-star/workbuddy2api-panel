@@ -65,6 +65,20 @@ export interface Account {
   at_exp?: number
   /** refreshToken 到期时刻（Unix 毫秒，0 = 无 / 非 JWT） */
   rt_exp?: number
+  /** 连登天数（签到排程落盘的体检快照） */
+  streak_days?: number
+  /** 盲盒抽奖剩余次数 */
+  chances?: number
+  /** 能量值 */
+  energy?: number
+  /** 能量够开盒（buddy/quota 的 affordable） */
+  affordable?: boolean
+  /** 补签卡张数 */
+  cards?: number
+  /** 活动补偿可领 */
+  comp_active?: boolean
+  /** 活动补偿已领 */
+  comp_claimed?: boolean
   disabled: boolean
   disabled_reason?: string
   /** 暂停选号：不参与选号，保号任务照常（与 disabled 正交；总览里单独计 paused，禁用优先） */
@@ -324,6 +338,8 @@ export interface CreditPackage {
   cycle?: boolean
   /** 按周期刷新的包（订阅、体验类）：end_time 是刷新时刻 */
   refresh?: boolean
+  /** 已从上游消失的历史包（本地存档补回）：remain 恒 0、used == size */
+  arch?: boolean
 }
 
 export interface PackageAccount {

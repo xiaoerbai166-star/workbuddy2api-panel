@@ -2507,6 +2507,9 @@ type CreditPackage struct {
 	SubProductName string `json:"sub_product_name,omitempty"`
 	// Cycle 为 true 表示按周期发放的包（读 Cycle* 字段），否则读 Capacity*。
 	Cycle bool `json:"cycle,omitempty"`
+	// Arch 为 true 表示「已从上游接口消失的历史包」（用完/过期后上游不再返回，本地存档补回）。
+	// 只在面板逐包明细里出现，Remain 恒 0、Used == Size。
+	Arch bool `json:"arch,omitempty"`
 }
 
 // CreditPackages 返回账号当前的逐包构成。remain/size 为各包求和。

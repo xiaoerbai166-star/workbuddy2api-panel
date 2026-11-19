@@ -14,6 +14,7 @@ import { AccountsPage } from './pages/accounts/AccountsPage'
 import { ConfigPage } from './pages/config/ConfigPage'
 import { CreditLogPage } from './pages/credits/CreditLogPage'
 import { DshPage } from './pages/dsh/DshPage'
+import { HealthPage } from './pages/health/HealthPage'
 import { KeysPage } from './pages/keys/KeysPage'
 import { LimitsPage } from './pages/limits/LimitsPage'
 import { LogsPage } from './pages/logs/LogsPage'
@@ -43,6 +44,7 @@ const packagesRoute = createRoute({
 })
 const creditsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/credits', component: CreditLogPage, staticData: { title: '积分获取' } })
 const taskCenterRoute = createRoute({ getParentRoute: () => rootRoute, path: '/taskscenter', component: TaskCenterPage, staticData: { title: '任务中心' } })
+const healthRoute = createRoute({ getParentRoute: () => rootRoute, path: '/health', component: HealthPage, staticData: { title: '体检' } })
 const modelsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/models', component: ModelsPage, staticData: { title: '模型与档位' } })
 const keysRoute = createRoute({ getParentRoute: () => rootRoute, path: '/keys', component: KeysPage, staticData: { title: '密钥' } })
 const configRoute = createRoute({ getParentRoute: () => rootRoute, path: '/config', component: ConfigPage, staticData: { title: '配置' } })
@@ -64,7 +66,7 @@ const wbchatsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/wbch
 const dshRoute = createRoute({ getParentRoute: () => rootRoute, path: '/dsh', component: DshPage, staticData: { title: 'DSH 对话' } })
 
 const routeTree = rootRoute.addChildren([
-  indexRoute, accountsRoute, proxiesRoute, usageRoute, requestsRoute, packagesRoute, creditsRoute, taskCenterRoute, modelsRoute, keysRoute, configRoute, logsRoute, limitsRoute, projectsRoute, wbchatsRoute, dshRoute,
+  indexRoute, accountsRoute, proxiesRoute, usageRoute, requestsRoute, packagesRoute, creditsRoute, taskCenterRoute, healthRoute, modelsRoute, keysRoute, configRoute, logsRoute, limitsRoute, projectsRoute, wbchatsRoute, dshRoute,
 ])
 
 // 旧版面板的地址是 #accounts、#usage…（没有斜杠），书签打开时换成新格式

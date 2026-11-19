@@ -6,7 +6,7 @@
 // HeroUI 没有侧栏/顶栏组件，布局用 Tailwind 搭，里面的导航、按钮、抽屉都是 HeroUI 组件。
 import { useEffect, useState, type ComponentType, type SVGProps } from 'react'
 import {
-  ArrowRightArrowLeft, ArrowsRotateRight, Bars, Boxes3, ChartColumn, Comment, Cpu, Folder, Gear, Gift, Globe, Key, ListCheck, ListTimeline, LogoGithub, Moon, Persons, Plus, Sliders, Sun, Thunderbolt,
+  ArrowRightArrowLeft, ArrowsRotateRight, Bars, Boxes3, ChartColumn, Comment, Cpu, Folder, Gear, Gift, Globe, HeartPulse, Key, ListCheck, ListTimeline, LogoGithub, Moon, Persons, Plus, Sliders, Sun, Thunderbolt,
 } from '@gravity-ui/icons'
 import {
   Button, Drawer, Label, Link, ListBox, RouterProvider, ScrollShadow, Toast, Tooltip, toast, useMediaQuery, useTheme,
@@ -37,6 +37,7 @@ const NAV: { to: string; label: string; icon: Icon }[] = [
   { to: '/packages', label: '积分构成', icon: Boxes3 },
   { to: '/credits', label: '积分获取', icon: Gift },
   { to: '/taskscenter', label: '任务中心', icon: ListCheck },
+  { to: '/health', label: '体检', icon: HeartPulse },
   { to: '/models', label: '模型与档位', icon: Cpu },
   { to: '/keys', label: '密钥', icon: Key },
   { to: '/config', label: '配置', icon: Gear },

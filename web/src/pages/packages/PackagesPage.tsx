@@ -6,8 +6,8 @@
 // 数据逐账号实时查上游（慢），与账号池页的到期提醒共用一份缓存：第一次进来自动查，之后切回来直接用缓存
 // 并标出数据年龄，点「刷新」才实时查（同上游 8391a05）。
 import { useMemo } from 'react'
-import { Accordion, Card, Label, ListBox, Select, Table } from '@heroui/react'
-import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { Accordion, Card, Chip, Label, ListBox, Select, Table } from '@heroui/react'
+import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { ChevronDown } from '@gravity-ui/icons'
 import { accountName } from '../../lib/accounts'
 import { fmtTok } from '../../lib/format'
@@ -18,7 +18,7 @@ import {
   pkDetailLimitValue, pkExpiryDateTime, pkExpiryText, pkSourceKey, PK_SORT_OPTIONS, summarizeCreditDays, VIZ_OTHER, type CreditDayRow,
   type PkSortMode,
 } from '../../lib/packages'
-import { useAccountNames, useConfig, usePackages } from '../../lib/queries'
+import { useAccountNames, useConfig, usePackages, useUsage } from '../../lib/queries'
 import type { CreditPackage, PackageAccount } from '../../lib/types'
 import { BusyButton, Empty, Loaded } from '../../components/Feedback'
 import { Hint } from '../../components/Hint'
@@ -37,6 +37,7 @@ export function PackagesPage() {
   const age = query.dataUpdatedAt ? Math.floor((now - query.dataUpdatedAt) / 60_000) : 0
   return (
     <>
+      <CashFlow list={list} />
       <Panel title="积分到期分布" desc="按批次到期日聚合，颜色区分账号">
         <Loaded query={query} rows={4}>{() => <ExpiryDistribution list={list} now={query.dataUpdatedAt} />}</Loaded>
       </Panel>
@@ -62,6 +63,51 @@ export function PackagesPage() {
       </Panel>
       {query.data && list.filter((a) => !a.error).map((a) => <Detail key={a.uid} a={a} limit={limit} sortMode={sortMode} colorOf={colorOf} />)}
     </>
+  )
+}
+
+/** 收支对照（近 30 天）：获得 = 包发放日按日累加面额（含已归档），消耗 = 用量按日积分扣除 */
+function CashFlow({ list }: { list: PackageAccount[] }) {
+  const usage = useUsage({ preset: '720', from: null, to: null })
+  const earnByDay = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const a of list) for (const p of a.packages || []) {
+      if (!p.created_at) continue
+      const day = p.created_at.slice(0, 10)
+      m.set(day, (m.get(day) ?? 0) + (p.size || 0))
+    }
+    return m
+  }, [list])
+  const costByDay = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const pt of usage.data?.series ?? []) {
+      if (pt.scope !== 'day') continue
+      m.set(pt.t, (m.get(pt.t) ?? 0) + (pt.credits ?? 0))
+    }
+    return m
+  }, [usage.data])
+  const data = useMemo(() => {
+    const days = [...new Set([...earnByDay.keys(), ...costByDay.keys()])].sort()
+    return days.map((d) => ({ day: d.slice(5), earn: earnByDay.get(d) ?? 0, cost: costByDay.get(d) ?? 0 }))
+  }, [earnByDay, costByDay])
+  if (!data.length) {
+    return <Panel title="收支对照（近 30 天）" desc="获得按包发放日、消耗按用量按日"><Empty title="暂无收支数据" /></Panel>
+  }
+  const tick = { fill: 'var(--muted)', fontSize: 11 }
+  return (
+    <Panel title="收支对照（近 30 天）" desc="获得 = 积分包发放面额（含已归档）· 消耗 = 模型用量扣除">
+      <ResponsiveContainer width="100%" height={220}>
+        <LineChart data={data} margin={{ top: 8, right: 8, bottom: 4, left: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--separator)" />
+          <XAxis dataKey="day" tick={tick} tickLine={false} axisLine={false} />
+          <YAxis tick={tick} tickLine={false} axisLine={false} width={52} />
+          <Tooltip />
+          <Legend />
+          <Line type="monotone" dataKey="earn" name="获得" stroke="var(--success)" dot={false} isAnimationActive={false} />
+          <Line type="monotone" dataKey="cost" name="消耗" stroke="var(--danger)" dot={false} isAnimationActive={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </Panel>
   )
 }
 
@@ -235,7 +281,7 @@ function PackTable({ packs, colorOf, label }: { packs: CreditPackage[]; colorOf:
                     <span className="flex items-start gap-2">
                       <span className="mt-1.5 size-2.5 shrink-0 rounded-sm" style={{ background: colorOf(pkSourceKey(p)) }} />
                       <span className="flex flex-col">
-                        {p.name || '(未命名)'}
+                        <span>{p.name || '(未命名)'}{p.arch && <Chip size="sm" variant="soft" color="default" className="ml-1.5">已归档</Chip>}</span>
                         {sub && <span className="font-mono text-xs text-muted">{sub}</span>}
                       </span>
                     </span>
@@ -261,12 +307,14 @@ function PackTable({ packs, colorOf, label }: { packs: CreditPackage[]; colorOf:
 /** 单账号逐包明细：按排序规则（默认最早到期）展示前 N 条，其余未用完的包和已用完的包各自折叠 */
 function Detail({ a, limit, sortMode, colorOf }: { a: PackageAccount; limit: number; sortMode: PkSortMode; colorOf: (key: string) => string }) {
   const g = pkDetailGroups(a.packages || [], limit, sortMode)
+  // 累计获得（含已归档的历史包）：所有见过包的 face 面额求和，对齐 7864 账本「该号累计获得」
+  const cum = (a.packages || []).reduce((s, p) => s + (p.size || 0), 0)
   const name = accountName(a) + ' · ' + (a.realm || '')
   return (
     <Panel
       title={name}
       desc={
-        '余额 ' + fmtTok(a.remain) + ' / 总额 ' + fmtTok(a.size) + ' · 可用 ' + (g.visible.length + g.rest.length) + ' 个包' +
+        '累计获得 ' + fmtTok(cum) + ' · 余额 ' + fmtTok(a.remain) + ' / 总额 ' + fmtTok(a.size) + ' · 可用 ' + (g.visible.length + g.rest.length) + ' 个包' +
         (g.used.length ? ' / 已用完 ' + g.used.length + ' 个' : '') + ' · 默认展示' + (sortMode === 'size_desc' ? '面额最大 ' : '最早到期 ') + pkDetailLimitValue(limit) + ' 条'
       }
       contentClassName="flex flex-col gap-2"
