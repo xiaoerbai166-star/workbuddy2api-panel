@@ -127,6 +127,9 @@ type Status struct {
 	// 误以为"没记录"，实际是零值被 omitempty 省略）。
 	ConsecutiveFails int       `json:"consecutive_fails"`
 	DegradeUntil     time.Time `json:"degrade_until,omitempty"` // 连败降权截止（非零且未过 = 降权中）
+	// SessionDeadFails 连续会话失效（12153 ErrSessionDead）计数（见 entry.sessionDeadFails），
+	// 面板「账号总表」P1 异常高亮用（≥2 即标记）。零值透出（同 ConsecutiveFails 口径）。
+	SessionDeadFails int `json:"session_dead_fails"`
 	// 运行态（不持久化）：在途请求数 + 熔断器状态。
 	InFlight     int       `json:"in_flight"`
 	BreakerFails int       `json:"breaker_fails"`

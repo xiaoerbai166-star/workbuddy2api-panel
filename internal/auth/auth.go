@@ -7,6 +7,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -568,4 +569,60 @@ func LoadDir(dir string) ([]*Auth, error) {
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+// jwtPayload JWT 中面板关心的声明集合（token_source 供企业会话判定，
+// auth_time/preferred_username/exp 供账号总表展示）。非 JWT / 解码失败
+// 一律返回零值（老 token 与非标准形态按无此声明处理，零回归）。先按无填充
+// base64url 解（JWT 标准），失败再试带填充形态（兼容非标准签发方）。
+type jwtPayload struct {
+	TokenSource       string `json:"token_source"`
+	AuthTime          int64  `json:"auth_time"`
+	PreferredUsername string `json:"preferred_username"`
+	Exp               int64  `json:"exp"`
+}
+
+func decodeJWTPayload(token string) jwtPayload {
+	var p jwtPayload
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return p
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		if raw, err = base64.URLEncoding.DecodeString(parts[1]); err != nil {
+			return p
+		}
+	}
+	_ = json.Unmarshal(raw, &p)
+	return p
+}
+
+// TokenProfile 凭证 JWT 的展示档案（只读，面板「账号总表」用）：登录时刻
+// （accessToken.auth_time）、上游用户名（preferred_username，多为手机号）、
+// AT/RT 到期时刻（exp，Unix 秒）。全部来自本地 token 解码，不打上游；
+// 字段缺失 / 非 JWT 时为对应零值。
+type TokenProfile struct {
+	AuthTime int64  `json:"auth_time,omitempty"` // accessToken auth_time：登录序号排序键
+	Username string `json:"username,omitempty"`  // accessToken preferred_username
+	ATExp    int64  `json:"at_exp,omitempty"`    // accessToken exp（Unix 秒）
+	RTExp    int64  `json:"rt_exp,omitempty"`    // refreshToken exp（Unix 秒）
+}
+
+// TokenProfile 解码当前 AT/RT 的展示档案。每次现解码而非 Parse 时缓存：
+// RefreshToken 会整体换发 token，登录态与有效期随换发更新，缓存会读到过期
+// 形态（同 IsEnterpriseSession 注释口径）。解码成本仅两次 base64 + 小 JSON
+// （每面板请求每账号一次），可忽略。
+func (a *Auth) TokenProfile() TokenProfile {
+	if a == nil {
+		return TokenProfile{}
+	}
+	at := decodeJWTPayload(a.AccessTokenValue())
+	rt := decodeJWTPayload(a.RefreshTokenValue())
+	return TokenProfile{
+		AuthTime: at.AuthTime,
+		Username: at.PreferredUsername,
+		ATExp:    at.Exp,
+		RTExp:    rt.Exp,
+	}
 }

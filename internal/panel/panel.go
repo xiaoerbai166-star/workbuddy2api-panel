@@ -283,6 +283,11 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/proxy_pools/{id}", p.withAuth(p.proxyPoolUpdate))
 	p.mux.HandleFunc("POST /panel/api/proxy_pools/{id}/delete", p.withAuth(p.proxyPoolDelete))
 	p.mux.HandleFunc("POST /panel/api/proxy_pools/{id}/rebalance", p.withAuth(p.proxyPoolRebalance))
+	p.mux.HandleFunc("GET /panel/api/board", p.withAuth(p.board))
+	p.mux.HandleFunc("GET /panel/api/limits", p.withAuth(p.limits))
+	p.mux.HandleFunc("GET /panel/api/wbchats", p.withAuth(p.wbchats))
+	p.mux.HandleFunc("GET /panel/api/projects", p.withAuth(p.projects))
+	p.mux.HandleFunc("GET /panel/api/dsh", p.withAuth(p.dshUsage))
 }
 
 // ServeHTTP 统一入口：先写安全响应头再分发，保证页面、静态资源、API
