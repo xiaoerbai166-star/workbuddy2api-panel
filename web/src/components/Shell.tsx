@@ -151,7 +151,16 @@ function Sidebar({ onNavigate, onShow }: { onNavigate?: () => void; onShow: (m: 
       </ScrollShadow>
       <div className="flex flex-col gap-1 border-t border-separator px-5 py-3 text-xs text-muted">
         <span className="flex items-center gap-2"><span className={`size-2 rounded-full ${state.dot}`} />{state.text}</span>
-        {data && <span>v{data.version} · {data.redis_mode === 'upstash' ? 'Redis 镜像' : '本地内存'}</span>}
+        {data && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onPress={() => onShow('changelog')}
+            className="h-auto min-w-0 justify-start px-0 py-0 text-xs font-normal text-muted hover:text-foreground"
+          >
+            v{data.version} · {data.redis_mode === 'upstash' ? 'Redis 镜像' : '本地内存'}（更新记录）
+          </Button>
+        )}
         <Link
           href={REPO.url}
           target="_blank"

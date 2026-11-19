@@ -32,8 +32,8 @@ const TEXT_LINK = 'underline decoration-muted/50 underline-offset-2'
 /** 重启等了这么久还没恢复，提示去看日志 */
 const SLOW_RESTART_SEC = 120
 
-/** 手动打开的窗：侧栏「有新版本」→ update，侧栏版本号 → about */
-export type ManualPanel = 'update' | 'about' | null
+/** 手动打开的窗：侧栏「有新版本」→ update，侧栏版本号 → about，左下角版本号 → changelog */
+export type ManualPanel = 'update' | 'about' | 'changelog' | null
 
 /** 侧栏的「有新版本」入口：没有新版本或关了更新检查时不显示 */
 export function UpdateBadge({ onPress }: { onPress: () => void }) {
@@ -75,8 +75,9 @@ export function UpdateNotice({ manual, onManualChange }: { manual: ManualPanel; 
   }, [outcome])
 
   const auto = data ? pickNotice(data, seen, dismissed) : null
-  const mode: NoticeMode | 'about' | 'progress' | null = pending && progressOpen ? 'progress'
+  const mode: NoticeMode | 'about' | 'changelog' | 'progress' | null = pending && progressOpen ? 'progress'
     : manual === 'about' ? 'about'
+    : manual === 'changelog' ? 'changelog'
     : manual === 'update' && data?.update_available ? 'update'
     : auto
 
@@ -189,6 +190,11 @@ export function UpdateNotice({ manual, onManualChange }: { manual: ManualPanel; 
         data={data}
         onShowUpdate={() => onManualChange('update')}
         onRollback={askRollback}
+      />
+      <ChangelogModal
+        open={mode === 'changelog'}
+        onClose={() => onManualChange(null)}
+        releases={data?.changelog ?? []}
       />
       <ProgressModal
         open={mode === 'progress'}
@@ -347,6 +353,30 @@ function AboutModal({ open, onClose, data, onShowUpdate, onRollback }: {
           </Alert.Content>
         </Alert>
       )}
+    </NoticeModal>
+  )
+}
+
+/** 更新记录：左下角版本号点开，列出内嵌更新日志的全部版本 */
+function ChangelogModal({ open, onClose, releases }: {
+  open: boolean
+  onClose: () => void
+  releases: Release[]
+}) {
+  return (
+    <NoticeModal
+      open={open}
+      onClose={onClose}
+      title="更新记录"
+      desc={releases.length > 0 ? `共 ${releases.length} 个版本，从新到旧。` : '还没有更新记录。'}
+      footer={
+        <>
+          <ExternalButton href={CHANGELOG_URL} variant="ghost">在 GitHub 查看</ExternalButton>
+          <Button variant="primary" slot="close">关闭</Button>
+        </>
+      }
+    >
+      <ReleaseList releases={releases} />
     </NoticeModal>
   )
 }

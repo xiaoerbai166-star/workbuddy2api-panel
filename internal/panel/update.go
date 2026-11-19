@@ -161,13 +161,15 @@ type versionResp struct {
 	// WhatsNew 从 since 升级到本机版本所包含的版本（取内嵌的更新日志）；since=none 时只有本机这一版；
 	// 没给 since 或没升级时为空
 	WhatsNew []changelog.Release `json:"whats_new"`
+	// Changelog 内嵌更新日志的全部版本，从新到旧；左下角版本号点开的「更新记录」读这里
+	Changelog []changelog.Release `json:"changelog"`
 	// SelfUpdate 一键更新的状态；没有接入时不给出
 	SelfUpdate *selfupdate.Status `json:"self_update,omitempty"`
 }
 
 // version 版本与更新信息：面板的更新提醒和「本次更新」弹窗都读这里。
 func (p *Panel) version(w http.ResponseWriter, r *http.Request) {
-	out := versionResp{Version: p.cfg.Version, UpdateCheck: p.updateCheckEnabled()}
+	out := versionResp{Version: p.cfg.Version, UpdateCheck: p.updateCheckEnabled(), Changelog: p.releases}
 	switch since := r.URL.Query().Get("since"); {
 	case changelog.Valid(since):
 		out.WhatsNew = changelog.Between(p.releases, since, p.cfg.Version)

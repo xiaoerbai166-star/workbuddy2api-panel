@@ -667,6 +667,8 @@ export interface VersionResp {
   checked_at?: string
   check_error?: string
   whats_new: Release[] | null
+  /** 内嵌更新日志的全部版本，从新到旧；「更新记录」弹窗读这里 */
+  changelog?: Release[] | null
   /** 一键更新的状态；网关没有接入时没有这一项 */
   self_update?: SelfUpdateStatus
 }
