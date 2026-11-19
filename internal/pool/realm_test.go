@@ -263,9 +263,10 @@ func TestCheapestWeightedUIDsForModelRealm(t *testing.T) {
 	if got := p.CheapestWeightedUIDsForModelRealm("glm-5.2", "", nil); !reflect.DeepEqual(got, []string{"cn1"}) {
 		t.Fatalf("同一窗口内不再探索，got %v", got)
 	}
-	// 快过期虚拟实例权重照常。
-	p.SetCreditsDetailed("cn1", 100, 100, 100, time.Now().Add(time.Hour), 100)
-	if got := p.CheapestWeightedUIDsForModelRealm("glm-5.2", "cn", nil); !reflect.DeepEqual(got, []string{"cn1", "cn1", "cn1"}) {
-		t.Fatalf("快过期号应出现 3 次，got %v", got)
+	// 快到期硬优先梯度：最早到期号 slots 最多（先烧最快到期的）。
+	p.SetCreditsDetailed("cn1", 100, 100, 100, time.Now().Add(time.Hour), 100)    // 1 小时后到期
+	p.SetCreditsDetailed("cn2", 100, 100,100, time.Now().Add(2*time.Hour), 100) // 2 小时后到期
+	if got := p.CheapestWeightedUIDsForModelRealm("glm-5.2", "cn", nil); !reflect.DeepEqual(got, []string{"cn1", "cn1", "cn2"}) {
+		t.Fatalf("快到期号应按到期时间梯度展开（早到期 slots 多），got %v", got)
 	}
 }

@@ -83,6 +83,11 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 		// （熔断/冷却共用 expiry 口径，取较早截止者）。禁用的账号永不参与兜底。
 		return p.pickEarliestExpiryLocked(tried, now, realm, reqModel)
 	}
+	// 快到期硬优先（prefer_expiring 开启时）：候选里存在有效快过期积分批次时，只在
+	// 这些候选里选（先烧快到期积分，避免奖励积分过期作废）；烧完回落普通加权路由。
+	// 放在优先级分层之前——「先烧快到期」高于用户手动优先级；hardActive 时跳过成本
+	// 分层（快到期积分不烧就废，收费也烧）。
+	cands, hardActive := p.expiringHardFilterLocked(cands, now)
 	// 优先级分层（见 groups.go）：只在优先级最高的那一层里挑，成本分层、权重都在层内算。
 	cands = p.topPriorityLocked(cands, reqModel, realm, now)
 	// top5 短名单按权重降序截断（而非 credits 单纯降序）：否则闲置补偿根本进不了
@@ -95,22 +100,30 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 			maxCredits = e.credits
 		}
 	}
-	// 成本分层与条件探索见 effectiveCostTierLocked：只保留生效层的候选。
-	bestTier, explored := p.effectiveCostTierLocked(cands, reqModel, realm, now)
+	// 成本分层与条件探索见 effectiveCostTierLocked：只保留生效层的候选。快到期硬优先
+	// 生效（hardActive）时跳过成本分层——快到期积分不烧就废，收费也烧。
+	var bestTier int
+	var explored bool
+	if hardActive {
+		bestTier = -1 // 哨兵：不过滤，全部快到期候选都保留
+	} else {
+		bestTier, explored = p.effectiveCostTierLocked(cands, reqModel, realm, now)
+	}
 	// 权重只算一次：顶 5 截断要排序，若在 sort 比较器里现算 weightOf 会翻成 O(n log n) 次
 	// 冗余浮点计算（46 账号约 500 次）。先做 O(n) 预计算，再按 (权重, uid) 排序。
 	// costTier/modelCostOf 同样每候选只算一次（存入 tier/cost1k），比较器只读缓存字段。
 	type weighted struct {
-		e      *entry
-		w      float64
-		tier   int
-		cost1k float64
+		e        *entry
+		w        float64
+		tier     int
+		cost1k   float64
+		earliest time.Time
 	}
 	ws := make([]weighted, 0, len(cands))
 	for _, e := range cands {
 		ti, ci := e.costTierOf(reqModel, now)
-		if ti == bestTier {
-			ws = append(ws, weighted{e: e, w: p.routingWeightOf(e, maxCredits, now), tier: ti, cost1k: ci})
+		if hardActive || ti == bestTier {
+			ws = append(ws, weighted{e: e, w: p.routingWeightOf(e, maxCredits, now), tier: ti, cost1k: ci, earliest: e.creditsEarliestExpiry})
 		}
 	}
 	// 等权重洗牌：仅当存在权重相等且候选数超过 top5 时，才对 ws 做 Fisher-Yates
@@ -133,6 +146,16 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 		}
 	}
 	sort.SliceStable(ws, func(i, j int) bool {
+		// 快到期硬优先：最早到期批次升序（先烧最快到期的），同到期时刻再按权重降序。
+		if hardActive {
+			if !ws[i].earliest.Equal(ws[j].earliest) {
+				return ws[i].earliest.Before(ws[j].earliest)
+			}
+			if ws[i].w != ws[j].w {
+				return ws[i].w > ws[j].w
+			}
+			return ws[i].e.a.UID < ws[j].e.a.UID
+		}
 		// costTier 硬过滤后 ws 全员同层，但仍按 cost1k 升序排（tier 2 层内单价低者
 		// 在前；tier 0/1 层 cost1k 恒 0，本比较退化为权重比较）——读缓存字段不现算。
 		if ws[i].cost1k != ws[j].cost1k {
@@ -452,6 +475,26 @@ func expiringNow(e *entry, now time.Time) bool {
 		e.creditsEarliestRemaining > 0 &&
 		!e.creditsEarliestExpiry.IsZero() &&
 		e.creditsEarliestExpiry.After(now)
+}
+
+// expiringHardFilterLocked 快到期硬优先：prefer_expiring 开启且候选里存在有效快过期
+// 积分批次时，只保留这些候选（先烧快到期积分，避免过期作废），并返回 hardActive=true
+// 表示硬过滤已生效；否则原样返回（回落普通加权路由）且 hardActive=false。
+// 调用方持 p.mu（读 e.creditsExpiring 等字段与 p.preferExpiring）。
+func (p *Pool) expiringHardFilterLocked(cands []*entry, now time.Time) ([]*entry, bool) {
+	if !p.preferExpiring {
+		return cands, false
+	}
+	expiring := make([]*entry, 0, len(cands))
+	for _, e := range cands {
+		if expiringNow(e, now) {
+			expiring = append(expiring, e)
+		}
+	}
+	if len(expiring) > 0 {
+		return expiring, true
+	}
+	return cands, false
 }
 
 // routingWeightOf 在普通账号权重上叠加快过期虚拟实例数量。prefer_expiring=false

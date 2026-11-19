@@ -1766,7 +1766,7 @@ func TestTokenUsagePersistsAcrossReload(t *testing.T) {
 	}
 }
 
-func TestPickPrefersExpiringByVirtualWeight(t *testing.T) {
+func TestPickHardPrefersExpiring(t *testing.T) {
 	withNoPickGap(t)
 	p := New("")
 	p.Add(&auth.Auth{UID: "later"})
@@ -1778,8 +1778,7 @@ func TestPickPrefersExpiringByVirtualWeight(t *testing.T) {
 	p.SetCreditsDetailed("soon", 100, 100, 100, now.Add(2*time.Hour), 100)
 	p.SetCreditsDetailed("none", 100, 100, 0, time.Time{}, 0)
 
-	// 3:1 虚拟实例是软偏好而非硬优先。用确定性随机源统计长期分布：两个快过期
-	// 账号的合计份额应显著高于普通账号，同时普通账号仍保留少量流量。
+	// 硬优先：存在有效快过期批次时，普通账号（none）不得被选中，全部流量落在快过期账号上。
 	rng := rand.New(rand.NewPCG(1, 2))
 	p.SetRandomSource(func(n int64) int64 { return rng.Int64N(n) })
 	counts := map[string]int{}
@@ -1790,9 +1789,11 @@ func TestPickPrefersExpiringByVirtualWeight(t *testing.T) {
 		}
 		counts[got.UID]++
 	}
-	expiring := counts["soon"] + counts["later"]
-	if expiring < 1500 || counts["none"] == 0 {
-		t.Fatalf("virtual weight distribution=%v, want expiring majority and regular non-zero", counts)
+	if counts["none"] != 0 {
+		t.Fatalf("hard prefer should never pick non-expiring account: %v", counts)
+	}
+	if counts["soon"] == 0 || counts["later"] == 0 {
+		t.Fatalf("expiring accounts should share all traffic: %v", counts)
 	}
 }
 

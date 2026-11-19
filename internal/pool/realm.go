@@ -84,7 +84,7 @@ func (p *Pool) WeightedAvailableUIDsForModelRealm(model, realm string, skip map[
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	now := time.Now()
-	return p.weightedUIDsLocked(p.servableEntriesLocked(model, realm, skip, now), now)
+	return p.weightedUIDsLocked(p.servableEntriesLocked(model, realm, skip, now), now, false)
 }
 
 // CheapestWeightedUIDsForModelRealm 新会话分配用：同 WeightedAvailableUIDsForModelRealm，
@@ -98,7 +98,10 @@ func (p *Pool) CheapestWeightedUIDsForModelRealm(model, realm string, skip map[s
 	defer p.mu.Unlock()
 	now := time.Now()
 	cands := p.servableEntriesLocked(model, realm, skip, now)
-	if model != "" && len(cands) > 0 {
+	// 快到期硬优先（与 pick 普通轮换同一口径）：先烧快到期积分。hardActive 时跳过
+	// 成本分层——快到期积分不烧就废，收费也烧。
+	cands, hardActive := p.expiringHardFilterLocked(cands, now)
+	if model != "" && len(cands) > 0 && !hardActive {
 		best, explored := p.effectiveCostTierLocked(cands, model, realm, now)
 		kept := cands[:0]
 		for _, e := range cands {
@@ -111,7 +114,7 @@ func (p *Pool) CheapestWeightedUIDsForModelRealm(model, realm string, skip map[s
 			log.Printf("[pool] cost explore model=%s realm=%q (新会话) window=%s", model, realm, p.costExploreInterval)
 		}
 	}
-	return p.weightedUIDsLocked(cands, now)
+	return p.weightedUIDsLocked(cands, now, hardActive)
 }
 
 // servableEntriesLocked 在该模型与域上可接请求（servableFor 且在途未满）的账号里优先级最高的那一层，按 UID 排序；
@@ -144,9 +147,27 @@ func (p *Pool) InTopTier(uid, model, realm string, skip map[string]bool) bool {
 	return slices.ContainsFunc(p.servableEntriesLocked(model, realm, skip, time.Now()), func(e *entry) bool { return e.a.UID == uid })
 }
 
-// weightedUIDsLocked 把账号展开成带虚拟实例权重的 UID 列表（快过期账号出现
-// expiringVirtualSlots 次，见 WeightedAvailableUIDsForModelRealm）。调用方持 p.mu。
-func (p *Pool) weightedUIDsLocked(es []*entry, now time.Time) []string {
+// weightedUIDsLocked 把账号展开成带虚拟实例权重的 UID 列表。hardActive 时按最早到期
+// 时间升序梯度展开（最早到期 slots 最多、最晚 1 个，先烧最快到期的号，同时保留全部
+// 快到期号可被选中，避免单号过热触发 429）；否则快过期账号出现 expiringVirtualSlots
+// 次（见 WeightedAvailableUIDsForModelRealm）。调用方持 p.mu。
+func (p *Pool) weightedUIDsLocked(es []*entry, now time.Time, hardActive bool) []string {
+	if hardActive {
+		sort.SliceStable(es, func(i, j int) bool {
+			if !es[i].creditsEarliestExpiry.Equal(es[j].creditsEarliestExpiry) {
+				return es[i].creditsEarliestExpiry.Before(es[j].creditsEarliestExpiry)
+			}
+			return es[i].a.UID < es[j].a.UID
+		})
+		n := len(es)
+		out := make([]string, 0, n*(n+1)/2)
+		for i, e := range es {
+			for j := 0; j < n-i; j++ {
+				out = append(out, e.a.UID)
+			}
+		}
+		return out
+	}
 	out := make([]string, 0, len(es))
 	for _, e := range es {
 		slots := 1
