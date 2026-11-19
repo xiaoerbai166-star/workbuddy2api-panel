@@ -100,11 +100,12 @@ export function useLogArchive(range: TimeRange, ch: LogChannel, level: LevelFilt
 }
 
 /** 积分获取流水：留存是磁盘上的文件，不轮询，换条件或点「重新读取」才查；换条件时先留着上一次的结果 */
-export function useCreditLog(range: TimeRange, uid: string, source: string, limit: number) {
+export function useCreditLog(range: TimeRange, uid: string, source: string, limit: number, intervalMs: number | false = false) {
   return useQuery({
     queryKey: qk.creditLog(range, uid, source, limit),
     queryFn: () => api<CreditLogResp>('credit_log?' + creditLogQuery(range, uid, source, limit).toString()),
     placeholderData: keepPreviousData,
+    refetchInterval: intervalMs || false,
   })
 }
 
@@ -207,7 +208,7 @@ export function useProbes() {
  * 用量。积分扣除按模型的「积分倍率」来自网关缓存的模型目录：拉用量前先确保目录在 10 分钟内查过
  * （和旧版面板同口径；模型页刚查过就直接复用，不重复打上游）。目录查询失败不影响用量本身。
  */
-export function useUsage(range: TimeRange, key = '') {
+export function useUsage(range: TimeRange, key = '', intervalMs: number | false = false) {
   return useQuery({
     queryKey: qk.usage(range, key),
     queryFn: async () => {
@@ -217,6 +218,7 @@ export function useUsage(range: TimeRange, key = '') {
       return api<UsageResp>('usage?' + q.toString())
     },
     placeholderData: keepPreviousData,
+    refetchInterval: intervalMs || false,
   })
 }
 

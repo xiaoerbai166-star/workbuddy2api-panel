@@ -24,6 +24,7 @@ import { AccountCard } from './AccountCard'
 import { AccountName, CreditsCell, GroupLine, StatusCell, UsageChips } from './AccountCells'
 import { AccountDrawer } from './AccountDrawer'
 import { BindProxyModal } from './BindProxyModal'
+import { DailySummary } from './DailySummary'
 import { ExpiryReminder } from './ExpiryReminder'
 import { ExportActions, SelectionCheckbox } from './ExportBar'
 import { GroupsPanel } from './GroupsPanel'
@@ -141,6 +142,8 @@ function Accounts({ data, fetchedAt }: { data: Overview; fetchedAt: number }) {
         <Stat label="积分剩余 / 总额" value={creditSum} sub={pool.unlimited ? `另有 ${pool.unlimited} 个企业版不限量` : undefined} />
         <Stat label="粘性会话" value={data.sticky_sessions} />
       </div>
+
+      <DailySummary />
 
       <ExpiryReminder accounts={accounts} />
       <ProxyReminder warnings={px?.warnings} />
