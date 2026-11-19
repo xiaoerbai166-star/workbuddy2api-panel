@@ -106,6 +106,26 @@ func (s *Scheduler) streakBonusAccount(a *auth.Auth) {
 	if chances > 0 {
 		log.Printf("streak-bonus %s: 抽奖完成 %d 次", logfmt.Label(a.UID, a.Nickname), chances)
 	}
+	// 能量盒：兑换刚发的能量先查额度，够开则开 1 个（每日签到排程末尾，幂等）。
+	// 对齐 7864 task_buddy_box：affordable 才开，count 固定 1，不追求开完。
+	energy, affordable, quotaErr := s.cfg.Upstream.BuddyQuota(a)
+	if quotaErr != nil {
+		log.Printf("streak-bonus %s: buddy quota: %v", logfmt.Label(a.UID, a.Nickname), quotaErr)
+	} else if affordable {
+		raw, err := s.cfg.Upstream.BuddyOpen(a)
+		if err != nil {
+			log.Printf("streak-bonus %s: buddy open: %v", logfmt.Label(a.UID, a.Nickname), err)
+		} else {
+			log.Printf("streak-bonus %s: 🎁 能量盒开出 %s（开盒前能量 %d）", logfmt.Label(a.UID, a.Nickname), compactJSON(raw), energy)
+		}
+	}
+	// 体检落盘：签到排程已查到连登/抽奖/能量/补签卡，补查补偿状态 → SetHealth。
+	// 供账号总表「体检」列展示（快照值，不实时打上游）。
+	compActive, compClaimed := false, false
+	if st, err := s.cfg.Upstream.GetCompensationStatus(a); err == nil {
+		compActive, compClaimed = st.Active, st.Claimed
+	}
+	s.cfg.Pool.SetHealth(a.UID, full.Streak.Days, chances, energy, full.MakeupCards.Balance, affordable, compActive, compClaimed)
 }
 
 // compactJSON 裁剪奖品载荷（日志单行可读）。按字节截到 220 后退回到字符边界，

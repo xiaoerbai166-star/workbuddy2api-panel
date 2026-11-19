@@ -103,6 +103,23 @@ func (p *Pool) SetCreditsDetailed(uid string, credits, total, expiring int64, ea
 	}
 }
 
+// SetHealth 更新账号成长状态（体检 5 项 + 能量盒可开：连登/抽奖/能量/补签卡/补偿）。
+// 签到排程查询落盘（运行态，不持久化，重启后下次签到重建），供账号总表「体检」展示。
+// 全部为快照值，不影响选号/冷却判定。
+func (p *Pool) SetHealth(uid string, streakDays, chances, energy, cards int, affordable, compActive, compClaimed bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		e.streakDays = streakDays
+		e.chances = chances
+		e.energy = energy
+		e.affordable = affordable
+		e.cards = cards
+		e.compActive = compActive
+		e.compClaimed = compClaimed
+	}
+}
+
 // ClearExpiringSnapshots 清空所有账号的快过期/最早到期缓存。配置窗口改变时调用，
 // 避免在新快照写入前继续使用旧窗口得到的路由数据；下一次签到或余额刷新会重建。
 func (p *Pool) ClearExpiringSnapshots() {

@@ -23,6 +23,8 @@ const (
 	buddyInfoPath      = "/activity/growth/buddy/info"
 	buddyFirstPath     = "/activity/growth/buddy/first"
 	buddyAgreementPath = "/activity/growth/buddy/agreement"
+	buddyQuotaPath     = "/activity/growth/buddy/quota"
+	buddyOpenPath      = "/activity/growth/buddy/open"
 	streakPath         = "/activity/growth/streak"
 )
 
@@ -116,6 +118,44 @@ func (c *Client) BuddyFirst(a *auth.Auth) error {
 func (c *Client) BuddyAgreement(a *auth.Auth) error {
 	_, err := c.webJSON(a, http.MethodPost, buddyAgreementPath, webPageGrowthCenter, map[string]any{"agree": true})
 	return err
+}
+
+// BuddyQuota 查询能量盒额度：energy=当前能量，affordable=能否开 1 个盒。
+// 7864 sidecar 口径：GET /buddy/quota → {"data":{"affordable":int,"balance":int}}；
+// data 为 null 或缺字段时兜底读顶层字段（7864 的 `dig(body,"data") or body`）。
+// affordable==0 表示能量不足（开 1 个需 cost_per_open）。
+func (c *Client) BuddyQuota(a *auth.Auth) (energy int, affordable bool, err error) {
+	data, err := c.webJSON(a, http.MethodGet, buddyQuotaPath, webPageGrowthCenter, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	var resp struct {
+		Data struct {
+			Affordable int `json:"affordable"`
+			Balance    int `json:"balance"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return 0, false, err
+	}
+	if resp.Data.Balance == 0 {
+		var top struct {
+			Affordable int `json:"affordable"`
+			Balance    int `json:"balance"`
+		}
+		if json.Unmarshal(data, &top) == nil {
+			resp.Data.Balance = top.Balance
+			resp.Data.Affordable = top.Affordable
+		}
+	}
+	return resp.Data.Balance, resp.Data.Affordable > 0, nil
+}
+
+// BuddyOpen 开一个能量盒（消耗能量，返回开出的 Buddy 奖品载荷）。
+// 幂等令牌 client_token 带 "buddy-open" 前缀；未达门槛/能量不足返回 *Error。
+func (c *Client) BuddyOpen(a *auth.Auth) (json.RawMessage, error) {
+	return c.webJSON(a, http.MethodPost, buddyOpenPath, webPageGrowthCenter,
+		map[string]any{"count": 1, "client_token": clientToken("buddy-open")})
 }
 
 // GrowthStreak 查询连登天数（只读 oracle）。响应 `data.streak.days`（probe_active.py

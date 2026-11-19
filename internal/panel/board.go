@@ -51,6 +51,15 @@ type boardRow struct {
 	EarliestExpiry int64 `json:"earliest_expiry"` // 最早到期批次时刻，ms
 	Checkin        bool  `json:"checkin"`         // 今日已签到
 
+	// 成长状态（体检 5 项，签到排程快照，global/企业号零值）：
+	StreakDays  int  `json:"streak_days"`  // 连登天数
+	Chances     int  `json:"chances"`      // 抽奖次数
+	Energy      int  `json:"energy"`       // 能量
+	Affordable  bool `json:"affordable"`   // 能量够开盒
+	Cards       int  `json:"cards"`        // 补签卡数
+	CompActive  bool `json:"comp_active"`  // 活动补偿可领
+	CompClaimed bool `json:"comp_claimed"` // 活动补偿已领
+
 	Succ        int64    `json:"succ"`
 	Err         int64    `json:"err"`
 	Req         int64    `json:"req"`
@@ -109,6 +118,12 @@ func boardRowOf(s pool.Status, pl *pool.Pool) boardRow {
 		CreditsTotal:     s.CreditsTotal,
 		Expiring:         s.CreditsExpiring,
 		Checkin:          s.CheckinDone,
+		StreakDays:       s.StreakDays,
+		Chances:          s.Chances,
+		Energy:           s.Energy,
+		Cards:            s.Cards,
+		CompActive:       s.CompActive,
+		CompClaimed:      s.CompClaimed,
 		Succ:             s.SuccessCount,
 		Err:              s.ErrTotal,
 		Req:              s.TokenUsage.RequestCount,

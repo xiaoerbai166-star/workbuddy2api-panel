@@ -116,6 +116,15 @@ type Status struct {
 	// CheckinDone 本地今日已签到（签到成功或上游"今天已签到"幂等拒绝均算）。
 	// global 域账号无签到体系，恒为 false。面板签到按钮据此显示 签到/已签。
 	CheckinDone bool       `json:"checkin_done,omitempty"`
+	// 成长状态（体检 5 项，签到排程刷新，运行态）：连登天数/抽奖次数/能量/补签卡/补偿状态。
+	// 供账号总表「体检」列展示；global/企业号无成长体系，恒为零值。
+	StreakDays  int  `json:"streak_days,omitempty"`
+	Chances     int  `json:"chances,omitempty"`
+	Energy      int  `json:"energy,omitempty"`
+	Affordable  bool `json:"affordable,omitempty"`
+	Cards       int  `json:"cards,omitempty"`
+	CompActive  bool `json:"comp_active,omitempty"`
+	CompClaimed bool `json:"comp_claimed,omitempty"`
 	TokenUsage  TokenUsage `json:"token_usage,omitempty"`
 	// ModelCosts 每模型实测成本台账（P1-anti-monopoly 可观测性）：运维据此自查
 	//「为什么总选它」——tier 0（免费）垄断 / tier 2 单价排序一眼可见。
@@ -220,7 +229,17 @@ type entry struct {
 	// 幂等拒绝（"今天已签到"）都算；statusOf 据此输出 CheckinDone 供面板按钮显示
 	// 签到/已签。持久化：跨重启不丢当日状态。
 	lastCheckinDay string
-	coolKind       CoolKind
+	// 成长状态（体检 5 项，签到排程时查询落盘，运行态不持久化，重启后下次签到重建）：
+	// streakDays 连登天数；chances 抽奖次数；energy 能量；cards 补签卡数；
+	// compActive/compClaimed 活动补偿可领/已领。
+	streakDays  int
+	chances     int
+	energy      int
+	affordable  bool
+	cards       int
+	compActive  bool
+	compClaimed bool
+	coolKind    CoolKind
 	until          time.Time // 冷却截止（即时冷却：CoolSoft 429 / CoolHard 余额耗尽）
 	disabled       bool
 	// paused 暂停选号：与 disabled 正交。置位后退出选号候选（healthy 判否），
