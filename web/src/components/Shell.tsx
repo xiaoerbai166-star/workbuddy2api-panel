@@ -6,7 +6,7 @@
 // HeroUI 没有侧栏/顶栏组件，布局用 Tailwind 搭，里面的导航、按钮、抽屉都是 HeroUI 组件。
 import { useEffect, useState, type ComponentType, type SVGProps } from 'react'
 import {
-  ArrowRightArrowLeft, ArrowsRotateRight, Bars, Boxes3, ChartColumn, Comment, Cpu, Folder, Gear, Gift, Globe, Key, LayoutHeaderCells, ListCheck, ListTimeline, LogoGithub, Moon, Persons, Plus, Sliders, Sun, Thunderbolt,
+  ArrowRightArrowLeft, ArrowsRotateRight, Bars, Boxes3, ChartColumn, Comment, Cpu, Folder, Gear, Gift, Globe, Key, ListCheck, ListTimeline, LogoGithub, Moon, Persons, Plus, Sliders, Sun, Thunderbolt,
 } from '@gravity-ui/icons'
 import {
   Button, Drawer, Label, Link, ListBox, RouterProvider, ScrollShadow, Toast, Tooltip, toast, useMediaQuery, useTheme,
@@ -30,7 +30,6 @@ const REPO = { name: 'yreidev/workbuddy2api-panel', url: 'https://github.com/yre
 
 const NAV: { to: string; label: string; icon: Icon }[] = [
   { to: '/accounts', label: '账号池', icon: Persons },
-  { to: '/board', label: '账号总表', icon: LayoutHeaderCells },
   { to: '/proxies', label: '代理', icon: Globe },
   { to: '/usage', label: '用量', icon: ChartColumn },
   { to: '/limits', label: '限流预算', icon: Sliders },

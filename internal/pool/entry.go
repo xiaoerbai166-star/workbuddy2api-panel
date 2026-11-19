@@ -130,6 +130,11 @@ type Status struct {
 	// SessionDeadFails 连续会话失效（12153 ErrSessionDead）计数（见 entry.sessionDeadFails），
 	// 面板「账号总表」P1 异常高亮用（≥2 即标记）。零值透出（同 ConsecutiveFails 口径）。
 	SessionDeadFails int `json:"session_dead_fails"`
+	// ATExp / RTExp 凭证 JWT 到期时刻（Unix 毫秒，0 = 无 / 非 JWT）。
+	// 来自 auth.TokenProfile()（本地解码，不打上游），面板「账号池表格」AT/RT 到期列用；
+	// 与 board.go 的 at_exp/rt_exp 同口径。
+	ATExp int64 `json:"at_exp,omitempty"`
+	RTExp int64 `json:"rt_exp,omitempty"`
 	// 运行态（不持久化）：在途请求数 + 熔断器状态。
 	InFlight     int       `json:"in_flight"`
 	BreakerFails int       `json:"breaker_fails"`

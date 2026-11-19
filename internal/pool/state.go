@@ -619,6 +619,11 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		BreakerFails:             e.fails,
 		BreakerUntil:             e.breakerUntil,
 	}
+	// AT/RT 到期（本地 JWT 解码，0 = 无）：面板「账号池表格」用，同 board.go 口径。
+	if tp := e.a.TokenProfile(); tp.ATExp != 0 || tp.RTExp != 0 {
+		st.ATExp = tp.ATExp * 1000
+		st.RTExp = tp.RTExp * 1000
+	}
 	// reason 仅在冷却/禁用中透出（issue #171）：软冷却按 until 到期恢复，
 	// 但 until/coolKind/reason 字段按设计不主动清理（NoteSuccess 注释：
 	// 「不碰 until/coolKind，那些是即时冷却，各自到期」）。无条件透出会让

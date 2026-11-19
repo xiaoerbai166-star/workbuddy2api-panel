@@ -7,7 +7,7 @@
 // 宽屏默认卡片网格，可切换成表格（记在本浏览器）；窄屏只有卡片。
 import { useMemo, useState } from 'react'
 import {
-  Button, Card, Checkbox, Label, ListBox, SearchField, Select, Table, ToggleButton, ToggleButtonGroup, useMediaQuery, type Selection, type SortDescriptor,
+  Button, Card, Checkbox, Chip, Label, ListBox, SearchField, Select, Table, ToggleButton, ToggleButtonGroup, useMediaQuery, type Selection, type SortDescriptor,
 } from '@heroui/react'
 import {
   accountHealth, accountName, CARD_SORT_OPTIONS, cardSortKey, filterAccounts, NO_GROUP, parseCardSort, poolCredits, sortAccounts, type AccountSortKey, type StatusFilter,
@@ -287,6 +287,20 @@ const SelectBox = ({ label }: { label: string }) => (
   </Checkbox>
 )
 
+const num = (n: number) => (n || 0).toLocaleString('zh-CN')
+const fmtMs = (ms?: number) => (ms ? new Date(ms).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : '—')
+
+/** P1（连续会话失效 ≥2）与 P3（连续失败 ≥3）异常标记 */
+function Badges({ sdf, cf }: { sdf: number; cf: number }) {
+  return (
+    <div className="flex gap-1">
+      {sdf >= 2 && <Chip size="sm" variant="soft" color="danger">P1</Chip>}
+      {cf >= 3 && <Chip size="sm" variant="soft" color="warning">P3</Chip>}
+      {sdf < 2 && cf < 3 && <span className="text-muted">—</span>}
+    </div>
+  )
+}
+
 function AccountTable({ rows, fetchedAt, now, poolMax, sort, onSort, selection, onSelect, busy, run, onOpen, proxyOf }: {
   rows: Account[]
   fetchedAt: number
@@ -311,7 +325,7 @@ function AccountTable({ rows, fetchedAt, now, poolMax, sort, onSort, selection, 
       <Table.ScrollContainer>
         <Table.Content
           aria-label="账号池"
-          className="min-w-[1140px]"
+          className="min-w-[1500px]"
           sortDescriptor={sort}
           onSortChange={onSort}
           selectionMode="multiple"
@@ -326,6 +340,10 @@ function AccountTable({ rows, fetchedAt, now, poolMax, sort, onSort, selection, 
             </Table.Column>
             <Table.Column id="status" className="whitespace-nowrap">状态</Table.Column>
             {sortable('credits', '积分')}
+            <Table.Column id="expiring" className="whitespace-nowrap text-right">快过期</Table.Column>
+            <Table.Column id="badges" className="whitespace-nowrap">异常</Table.Column>
+            <Table.Column id="at_exp" className="whitespace-nowrap text-right">AT 到期</Table.Column>
+            <Table.Column id="rt_exp" className="whitespace-nowrap text-right">RT 到期</Table.Column>
             {sortable('errors', '成功 / 失败')}
             <Table.Column id="usage" className="whitespace-nowrap">用量</Table.Column>
             {sortable('last_success', '最近成功')}
@@ -340,6 +358,10 @@ function AccountTable({ rows, fetchedAt, now, poolMax, sort, onSort, selection, 
                   <Table.Cell><div className="flex max-w-40 flex-col"><AccountName a={a} /><GroupLine a={a} /></div></Table.Cell>
                   <Table.Cell><StatusCell a={a} health={health} now={now} proxy={proxyOf(a.uid)} /></Table.Cell>
                   <Table.Cell><CreditsCell a={a} poolMax={poolMax} now={now} /></Table.Cell>
+                  <Table.Cell className="text-right font-mono tabular-nums text-warning">{a.credits_expiring ? num(a.credits_expiring) : '—'}</Table.Cell>
+                  <Table.Cell><Badges sdf={a.session_dead_fails ?? 0} cf={a.consecutive_fails} /></Table.Cell>
+                  <Table.Cell className="whitespace-nowrap font-mono tabular-nums text-xs">{fmtMs(a.at_exp)}</Table.Cell>
+                  <Table.Cell className="whitespace-nowrap font-mono tabular-nums text-xs">{fmtMs(a.rt_exp)}</Table.Cell>
                   <Table.Cell className="whitespace-nowrap">
                     <div className="font-mono tabular-nums">
                       {a.success_count || 0} <span className="text-muted">/</span> <span className="text-danger">{a.err_total || 0}</span>

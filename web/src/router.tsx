@@ -11,7 +11,6 @@ import { RouteError } from './components/RouteError'
 import { Shell } from './components/Shell'
 import { isLegacyChatLink, isLogChannel, type LogChannel } from './lib/logs'
 import { AccountsPage } from './pages/accounts/AccountsPage'
-import { BoardPage } from './pages/board/BoardPage'
 import { ConfigPage } from './pages/config/ConfigPage'
 import { CreditLogPage } from './pages/credits/CreditLogPage'
 import { DshPage } from './pages/dsh/DshPage'
@@ -59,14 +58,13 @@ const logsRoute = createRoute({
   },
 })
 const requestsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/requests', component: RequestMetrics, staticData: { title: '请求记录' } })
-const boardRoute = createRoute({ getParentRoute: () => rootRoute, path: '/board', component: BoardPage, staticData: { title: '账号总表' } })
 const limitsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/limits', component: LimitsPage, staticData: { title: '限流预算' } })
 const projectsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects', component: ProjectsPage, staticData: { title: '按项目消耗' } })
 const wbchatsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/wbchats', component: WbchatsPage, staticData: { title: 'WorkBuddy 对话' } })
 const dshRoute = createRoute({ getParentRoute: () => rootRoute, path: '/dsh', component: DshPage, staticData: { title: 'DSH 对话' } })
 
 const routeTree = rootRoute.addChildren([
-  indexRoute, accountsRoute, boardRoute, proxiesRoute, usageRoute, requestsRoute, packagesRoute, creditsRoute, taskCenterRoute, modelsRoute, keysRoute, configRoute, logsRoute, limitsRoute, projectsRoute, wbchatsRoute, dshRoute,
+  indexRoute, accountsRoute, proxiesRoute, usageRoute, requestsRoute, packagesRoute, creditsRoute, taskCenterRoute, modelsRoute, keysRoute, configRoute, logsRoute, limitsRoute, projectsRoute, wbchatsRoute, dshRoute,
 ])
 
 // 旧版面板的地址是 #accounts、#usage…（没有斜杠），书签打开时换成新格式

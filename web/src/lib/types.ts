@@ -61,6 +61,10 @@ export interface Account {
   enterprise?: boolean
   /** 本地今日已签到（签到成功或上游「今天已签到」都算；国际版没有签到，恒为 false） */
   checkin_done?: boolean
+  /** accessToken 到期时刻（Unix 毫秒，0 = 无 / 非 JWT） */
+  at_exp?: number
+  /** refreshToken 到期时刻（Unix 毫秒，0 = 无 / 非 JWT） */
+  rt_exp?: number
   disabled: boolean
   disabled_reason?: string
   /** 暂停选号：不参与选号，保号任务照常（与 disabled 正交；总览里单独计 paused，禁用优先） */
@@ -72,6 +76,8 @@ export interface Account {
   token_usage?: TokenUsage
   model_costs?: ModelCost[]
   consecutive_fails: number
+  /** 连续会话失效（12153）计数，≥2 = P1 异常（同账号总表的 sdf） */
+  session_dead_fails?: number
   degrade_until?: string
   in_flight: number
   breaker_fails: number
