@@ -35,7 +35,7 @@ func groupRig(t *testing.T) (h *Handler, p *pool.Pool, scoped, open apikeys.Key,
 		&auth.Auth{UID: "in", AccessToken: "at-in", ExpiresAt: 9999999999},
 		&auth.Auth{UID: "out", AccessToken: "at-out", ExpiresAt: 9999999999},
 	)
-	g, _ := p.CreateGroup("A", "")
+	g, _ := p.CreateGroup("A", "", 0)
 	p.SetAccountGroups("in", []string{g.ID})
 	store, _ := apikeys.Open("")
 	scoped = createKey(t, store, apikeys.Input{Name: "只用 A", Enabled: true, Groups: []string{g.ID}})
@@ -61,13 +61,13 @@ func chatWith(h *Handler, k apikeys.Key, conv string) *httptest.ResponseRecorder
 // 组里的号都接不了时回 503 并说明是这个密钥的分组里没号，不借组外的号。不限的密钥照常用全部的号。
 func TestKeyGroupsOnlyOwnAccounts(t *testing.T) {
 	h, p, scoped, open, tokens := groupRig(t)
-	p.SetPriority("in", 5) // 组外的 out 优先级更高
-	// 不限的密钥先把会话 c1 绑到 out 上
+	p.SetPriority("in", 5) // in 的号优先级低（5 > out 的 0），但 in 在组 A（组优先级 0）高于未分组的 out（99）：分组优先
+	// 不限的密钥遵循分组优先级：先选组 A 的 in，即使 out 的号优先级更高。
 	if rec := chatWith(h, open, "c1"); rec.Code != 200 {
 		t.Fatalf("不限的密钥: code=%d body=%s", rec.Code, rec.Body)
 	}
-	if got := tokens(); len(got) != 1 || got[0] != "Bearer at-out" {
-		t.Fatalf("不限的密钥应先用优先级高的 out: %v", got)
+	if got := tokens(); len(got) != 1 || got[0] != "Bearer at-in" {
+		t.Fatalf("不限的密钥应先用组 A 的 in（分组优先级高于号优先级）: %v", got)
 	}
 	for _, conv := range []string{"c1", "c2", "c3"} {
 		if rec := chatWith(h, scoped, conv); rec.Code != 200 {

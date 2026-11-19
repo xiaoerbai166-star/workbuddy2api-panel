@@ -26,6 +26,9 @@ type Group struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Note      string    `json:"note,omitempty"`
+	// Priority 分组的优先级，越小越先用，默认 0。分组优先级高于号的优先级：
+	// 选号先按分组分层（数字小的组先用，组里号都用不了才轮到下一组），组内再按号的优先级。
+	Priority  int       `json:"priority,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -66,21 +69,21 @@ func (p *Pool) HasGroup(id string) bool {
 	return p.groupIndexLocked(id) >= 0
 }
 
-// CreateGroup 建一个分组。name、note 由调用方整理、校验过。
-func (p *Pool) CreateGroup(name, note string) (Group, error) {
+// CreateGroup 建一个分组。name、note、priority 由调用方整理、校验过（priority 0～MaxPriority，越小越先用）。
+func (p *Pool) CreateGroup(name, note string, priority int) (Group, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.nameTakenLocked(name, "") {
 		return Group{}, ErrGroupNameTaken
 	}
-	g := Group{ID: "g" + strings.ToLower(rand.Text()[:10]), Name: name, Note: note, CreatedAt: time.Now()}
+	g := Group{ID: "g" + strings.ToLower(rand.Text()[:10]), Name: name, Note: note, Priority: priority, CreatedAt: time.Now()}
 	p.groups = append(p.groups, g)
 	p.dirty.Store(true)
 	return g, nil
 }
 
-// UpdateGroup 改分组的名字和备注；号和密钥按 id 认分组，改名不影响它们。
-func (p *Pool) UpdateGroup(id, name, note string) (Group, error) {
+// UpdateGroup 改分组的名字、备注和优先级；号和密钥按 id 认分组，改名不影响它们。
+func (p *Pool) UpdateGroup(id, name, note string, priority int) (Group, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	i := p.groupIndexLocked(id)
@@ -90,7 +93,7 @@ func (p *Pool) UpdateGroup(id, name, note string) (Group, error) {
 	if p.nameTakenLocked(name, id) {
 		return Group{}, ErrGroupNameTaken
 	}
-	p.groups[i].Name, p.groups[i].Note = name, note
+	p.groups[i].Name, p.groups[i].Note, p.groups[i].Priority = name, note, priority
 	p.dirty.Store(true)
 	return p.groups[i], nil
 }
@@ -175,6 +178,41 @@ func (p *Pool) UIDsOutsideGroups(ids []string) map[string]bool {
 	for uid, e := range p.byUID {
 		if !slices.ContainsFunc(e.groups, func(g string) bool { return slices.Contains(ids, g) }) {
 			out[uid] = true
+		}
+	}
+	return out
+}
+
+// groupPriorityLocked 号的最高分组优先级（数字最小）：号在多个组时取这些组里最小的 priority；
+// 没进任何组 = MaxPriority（最低）。调用方持 p.mu。
+func (p *Pool) groupPriorityLocked(e *entry) int {
+	best := MaxPriority
+	for _, gid := range e.groups {
+		if gi := p.groupIndexLocked(gid); gi >= 0 && p.groups[gi].Priority < best {
+			best = p.groups[gi].Priority
+		}
+	}
+	return best
+}
+
+// topGroupPriorityLocked 只留分组优先级最高（数字最小）的那一层号；分组优先级高于号的优先级，选号先按分组分层，
+// 组内再按号的优先级。哪一层最高只看此刻真能接这个请求的号：积分保底拦着的不算（同 topPriorityLocked 口径），
+// 免得一层号全触底时还卡在这一层；都被拦着时原样返回。调用方持 p.mu。
+func (p *Pool) topGroupPriorityLocked(es []*entry, model, realm string, now time.Time) []*entry {
+	best, found := 0, false
+	for _, e := range es {
+		pr := p.groupPriorityLocked(e)
+		if (!found || pr < best) && !p.floorBlockedForRealmModel(e, model, realm, now) {
+			best, found = pr, true
+		}
+	}
+	if !found {
+		return es
+	}
+	out := es[:0]
+	for _, e := range es {
+		if p.groupPriorityLocked(e) == best {
+			out = append(out, e)
 		}
 	}
 	return out

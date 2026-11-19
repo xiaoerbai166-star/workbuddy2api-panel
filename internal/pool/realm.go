@@ -97,10 +97,12 @@ func (p *Pool) CheapestWeightedUIDsForModelRealm(model, realm string, skip map[s
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
-	cands := p.servableEntriesLocked(model, realm, skip, now)
-	// 快到期硬优先（与 pick 普通轮换同一口径）：先烧快到期积分。hardActive 时跳过
-	// 成本分层——快到期积分不烧就废，收费也烧。
+	cands := p.servableCandidatesLocked(model, realm, skip, now)
+	// 分层顺序（新会话分配）：快到期硬优先（最高，先烧快到期积分）→ 分组优先级 → 号优先级。
+	// hardActive 时跳过成本分层——快到期积分不烧就废，收费也烧。
 	cands, hardActive := p.expiringHardFilterLocked(cands, now)
+	cands = p.topGroupPriorityLocked(cands, model, realm, now)
+	cands = p.topPriorityLocked(cands, model, realm, now)
 	if model != "" && len(cands) > 0 && !hardActive {
 		best, explored := p.effectiveCostTierLocked(cands, model, realm, now)
 		kept := cands[:0]
@@ -117,10 +119,9 @@ func (p *Pool) CheapestWeightedUIDsForModelRealm(model, realm string, skip map[s
 	return p.weightedUIDsLocked(cands, now, hardActive)
 }
 
-// servableEntriesLocked 在该模型与域上可接请求（servableFor 且在途未满）的账号里优先级最高的那一层，按 UID 排序；
-// skip 里的号不算（客户端密钥绑了分组时，组外的号）。会话粘性按它续用和分配，所以绑在低优先级号上的会话，
-// 等高优先级的号又能接了，下一次请求就回到高优先级那层。调用方持 p.mu（读锁即可）。
-func (p *Pool) servableEntriesLocked(model, realm string, skip map[string]bool, now time.Time) []*entry {
+// servableCandidatesLocked 此刻能接这个请求（servableFor 且在途未满）的账号，skip 里的号不算（客户端密钥绑了
+// 分组时，组外的号）；未做任何分层。调用方持 p.mu（读锁即可）。
+func (p *Pool) servableCandidatesLocked(model, realm string, skip map[string]bool, now time.Time) []*entry {
 	out := make([]*entry, 0, len(p.byUID))
 	for uid, e := range p.byUID {
 		if skip[uid] || (realm != "" && e.a.Realm() != realm) {
@@ -134,6 +135,15 @@ func (p *Pool) servableEntriesLocked(model, realm string, skip map[string]bool, 
 		}
 		out = append(out, e)
 	}
+	return out
+}
+
+// servableEntriesLocked 在 servableCandidatesLocked 之上按分组优先级、号优先级分层（数字小的先用），按 UID 排序；
+// 不做快到期硬优先（会话粘性要稳定，不被快到期积分牵着跳号）。会话粘性按它续用和分配，所以绑在低优先级号上的
+// 会话，等高优先级的号又能接了，下一次请求就回到高优先级那层。调用方持 p.mu（读锁即可）。
+func (p *Pool) servableEntriesLocked(model, realm string, skip map[string]bool, now time.Time) []*entry {
+	out := p.servableCandidatesLocked(model, realm, skip, now)
+	out = p.topGroupPriorityLocked(out, model, realm, now)
 	out = p.topPriorityLocked(out, model, realm, now)
 	sort.Slice(out, func(i, j int) bool { return out[i].a.UID < out[j].a.UID })
 	return out

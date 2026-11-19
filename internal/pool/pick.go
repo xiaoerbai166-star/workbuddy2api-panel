@@ -88,7 +88,10 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 	// 放在优先级分层之前——「先烧快到期」高于用户手动优先级；hardActive 时跳过成本
 	// 分层（快到期积分不烧就废，收费也烧）。
 	cands, hardActive := p.expiringHardFilterLocked(cands, now)
-	// 优先级分层（见 groups.go）：只在优先级最高的那一层里挑，成本分层、权重都在层内算。
+	// 分组优先级分层（见 groups.go）：先按分组分层（数字小的组先用，组里号都用不了才轮到
+	// 下一组），组内再按号的优先级分层。两层都在成本分层、权重之前。
+	cands = p.topGroupPriorityLocked(cands, reqModel, realm, now)
+	// 号优先级分层（见 groups.go）：只在优先级最高的那一层里挑，成本分层、权重都在层内算。
 	cands = p.topPriorityLocked(cands, reqModel, realm, now)
 	// top5 短名单按权重降序截断（而非 credits 单纯降序）：否则闲置补偿根本进不了
 	// 短名单决策，低 credits 但久置的账号会永远排不进 top5。

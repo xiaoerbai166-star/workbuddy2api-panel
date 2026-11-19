@@ -101,6 +101,8 @@ export interface Group {
   accounts: number
   /** 限定了这个分组的密钥名字 */
   keys: string[]
+  /** 分组优先级：越小越先用（0=最高，99=最低，同未分组），不设时 0 */
+  priority?: number
 }
 
 export interface GroupsResp {

@@ -18,21 +18,21 @@ import (
 func TestGroupCRUD(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
-	a, err := p.CreateGroup("主力", "")
-	if err != nil || a.ID == "" || a.CreatedAt.IsZero() {
+	a, err := p.CreateGroup("主力", "", 0)
+	if err != nil || a.ID == "" || a.CreatedAt.IsZero() || a.Priority != 0 {
 		t.Fatalf("建分组: %+v %v", a, err)
 	}
-	b, _ := p.CreateGroup("Backup", "备用号")
-	if _, err := p.CreateGroup("backup", ""); !errors.Is(err, ErrGroupNameTaken) {
+	b, _ := p.CreateGroup("Backup", "备用号", 3)
+	if _, err := p.CreateGroup("backup", "", 0); !errors.Is(err, ErrGroupNameTaken) {
 		t.Fatalf("同名应报 ErrGroupNameTaken: %v", err)
 	}
-	if _, err := p.UpdateGroup(a.ID, "BACKUP", ""); !errors.Is(err, ErrGroupNameTaken) {
+	if _, err := p.UpdateGroup(a.ID, "BACKUP", "", 0); !errors.Is(err, ErrGroupNameTaken) {
 		t.Fatalf("改成别的组的名字应报 ErrGroupNameTaken: %v", err)
 	}
-	if g, err := p.UpdateGroup(b.ID, "backup", "改了"); err != nil || g.Name != "backup" || g.Note != "改了" {
-		t.Fatalf("改自己的大小写和备注应成功: %+v %v", g, err)
+	if g, err := p.UpdateGroup(b.ID, "backup", "改了", 7); err != nil || g.Name != "backup" || g.Note != "改了" || g.Priority != 7 {
+		t.Fatalf("改自己的大小写、备注和优先级应成功: %+v %v", g, err)
 	}
-	if _, err := p.UpdateGroup("nope", "x", ""); !errors.Is(err, ErrGroupNotFound) {
+	if _, err := p.UpdateGroup("nope", "x", "", 0); !errors.Is(err, ErrGroupNotFound) {
 		t.Fatalf("改不存在的分组: %v", err)
 	}
 	if found, err := p.SetAccountGroups("u1", []string{a.ID, b.ID}); !found || err != nil {
@@ -56,7 +56,7 @@ func TestGroupCRUD(t *testing.T) {
 func TestAccountGroupMembership(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
-	g, _ := p.CreateGroup("A", "")
+	g, _ := p.CreateGroup("A", "", 0)
 	if found, err := p.SetAccountGroups("u1", []string{g.ID, "nope"}); !found || !errors.Is(err, ErrGroupNotFound) {
 		t.Fatalf("有不存在的分组: %v %v", found, err)
 	}
@@ -85,8 +85,8 @@ func TestUIDsOutsideGroups(t *testing.T) {
 	for _, uid := range []string{"a", "b", "ab", "none"} {
 		p.Add(&auth.Auth{UID: uid})
 	}
-	ga, _ := p.CreateGroup("A", "")
-	gb, _ := p.CreateGroup("B", "")
+	ga, _ := p.CreateGroup("A", "", 0)
+	gb, _ := p.CreateGroup("B", "", 0)
 	p.SetAccountGroups("a", []string{ga.ID})
 	p.SetAccountGroups("b", []string{gb.ID})
 	p.SetAccountGroups("ab", []string{ga.ID, gb.ID})
@@ -164,6 +164,65 @@ func TestPriorityTiers(t *testing.T) {
 	}
 }
 
+// TestGroupPriorityTiers 分组优先级高于号优先级：选号先按分组分层（数字小的组先用，组里号都用不了才轮到下一组），
+// 未分组 = MaxPriority（最低）；号在多个组取最小 priority；组内再按号的优先级。
+func TestGroupPriorityTiers(t *testing.T) {
+	p := New("")
+	for _, uid := range []string{"ga1", "ga2", "gb1", "none"} {
+		p.Add(&auth.Auth{UID: uid})
+		p.SetCredits(uid, 1000, 0)
+	}
+	ga, _ := p.CreateGroup("A", "", 1)
+	gb, _ := p.CreateGroup("B", "", 5)
+	p.SetAccountGroups("ga1", []string{ga.ID})
+	p.SetAccountGroups("ga2", []string{ga.ID})
+	p.SetAccountGroups("gb1", []string{gb.ID})
+
+	pickN := func() map[string]int {
+		got := map[string]int{}
+		for range 20 {
+			a := p.PickExcludingForRealm(nil, "", "")
+			if a == nil {
+				got["nil"]++
+				continue
+			}
+			got[a.UID]++
+			p.mu.Lock()
+			p.byUID[a.UID].lastUsed = time.Time{} // 不让防撞号把下一次挤到别的号
+			p.mu.Unlock()
+		}
+		return got
+	}
+	// 组 A（priority 1）优先于组 B（priority 5）和未分组（MaxPriority）。
+	if got := pickN(); got["ga1"]+got["ga2"] != 20 || got["gb1"] != 0 || got["none"] != 0 {
+		t.Fatalf("应只用组 A: %v", got)
+	}
+	// 组 A 的号在途满：轮到组 B。
+	p.SetMaxInFlight(1)
+	p.Acquire("ga1")
+	p.Acquire("ga2")
+	if got := pickN(); got["gb1"] != 20 {
+		t.Fatalf("组 A 满应用组 B: %v", got)
+	}
+	p.Release("ga1")
+	p.Release("ga2")
+	// 组 A、B 都冷却：轮到未分组。
+	p.Cooldown("ga1", CoolSoft, time.Hour, "429")
+	p.Cooldown("ga2", CoolSoft, time.Hour, "429")
+	p.Cooldown("gb1", CoolSoft, time.Hour, "429")
+	if got := pickN(); got["none"] != 20 {
+		t.Fatalf("组都冷却应用未分组: %v", got)
+	}
+	p.Revive("ga1")
+	p.Revive("ga2")
+	p.Revive("gb1")
+	// 号在多个组取最小 priority：gb1 也进组 A 后与组 A 的号同层（都是 1）。
+	p.SetAccountGroups("gb1", []string{ga.ID, gb.ID})
+	if got := pickN(); got["gb1"] == 0 || got["none"] != 0 {
+		t.Fatalf("gb1 进组 A 后应同层: %v", got)
+	}
+}
+
 // TestSessionCandidatesTierAndSkip 会话候选（续用、分配、换号回用过的号）只有最高那层，skip 里的号不算。
 func TestSessionCandidatesTierAndSkip(t *testing.T) {
 	p := New("")
@@ -191,7 +250,7 @@ func TestGroupsPersist(t *testing.T) {
 	fp := filepath.Join(t.TempDir(), "state.json")
 	p := New(fp)
 	p.Add(&auth.Auth{UID: "u1"})
-	g, _ := p.CreateGroup("主力", "常用")
+	g, _ := p.CreateGroup("主力", "常用", 0)
 	p.SetAccountGroups("u1", []string{g.ID})
 	p.SetPriority("u1", 3)
 	p.mu.Lock()

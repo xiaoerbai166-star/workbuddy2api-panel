@@ -43,35 +43,35 @@ func (p *Panel) groupsList(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"groups": out})
 }
 
-// groupCreate POST /panel/api/groups：建分组，请求体 {"name","note"}。
+// groupCreate POST /panel/api/groups：建分组，请求体 {"name","note","priority"}（priority 可选）。
 func (p *Panel) groupCreate(w http.ResponseWriter, r *http.Request) {
-	name, note, ok := groupInput(w, r)
+	name, note, priority, ok := groupInput(w, r)
 	if !ok {
 		return
 	}
-	g, err := p.cfg.Pool.CreateGroup(name, note)
+	g, err := p.cfg.Pool.CreateGroup(name, note, priority)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
-	log.Printf("panel: 建分组 %s（%s）", g.Name, g.ID)
+	log.Printf("panel: 建分组 %s（%s，优先级 %d）", g.Name, g.ID, g.Priority)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "group": g})
 }
 
-// groupUpdate POST /panel/api/groups/{id}：改名字和备注，请求体同建分组。
+// groupUpdate POST /panel/api/groups/{id}：改名字、备注和优先级，请求体同建分组。
 func (p *Panel) groupUpdate(w http.ResponseWriter, r *http.Request) {
-	name, note, ok := groupInput(w, r)
+	name, note, priority, ok := groupInput(w, r)
 	if !ok {
 		return
 	}
-	g, err := p.cfg.Pool.UpdateGroup(r.PathValue("id"), name, note)
+	g, err := p.cfg.Pool.UpdateGroup(r.PathValue("id"), name, note, priority)
 	switch {
 	case errors.Is(err, pool.ErrGroupNotFound):
 		writeErr(w, http.StatusNotFound, err.Error())
 	case err != nil:
 		writeErr(w, http.StatusConflict, err.Error())
 	default:
-		log.Printf("panel: 改分组 %s（%s）", g.Name, g.ID)
+		log.Printf("panel: 改分组 %s（%s，优先级 %d）", g.Name, g.ID, g.Priority)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "group": g})
 	}
 }
@@ -153,17 +153,22 @@ func (p *Panel) checkGroups(ids []string) error {
 	return nil
 }
 
-// groupInput 读建、改分组的请求体：名字去掉首尾空白后 1～20 个字，备注最多 100 个字，都不能有换行等控制字符。
-func groupInput(w http.ResponseWriter, r *http.Request) (name, note string, ok bool) {
+// groupInput 读建、改分组的请求体：名字去掉首尾空白后 1～20 个字，备注最多 100 个字，都不能有换行等控制字符；
+// priority 可选（缺省 0），0～99 越小越先用。
+func groupInput(w http.ResponseWriter, r *http.Request) (name, note string, priority int, ok bool) {
 	var body struct {
-		Name string `json:"name"`
-		Note string `json:"note"`
+		Name     string `json:"name"`
+		Note     string `json:"note"`
+		Priority *int   `json:"priority"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求格式不对："+err.Error())
-		return "", "", false
+		return "", "", 0, false
 	}
 	name, note = strings.TrimSpace(body.Name), strings.TrimSpace(body.Note)
+	if body.Priority != nil {
+		priority = *body.Priority
+	}
 	switch {
 	case name == "":
 		writeErr(w, http.StatusBadRequest, "分组名字不能为空")
@@ -173,10 +178,12 @@ func groupInput(w http.ResponseWriter, r *http.Request) (name, note string, ok b
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("分组备注最多 %d 个字", groupNoteMax))
 	case strings.IndexFunc(name+note, unicode.IsControl) >= 0:
 		writeErr(w, http.StatusBadRequest, "分组名字和备注不能有换行或控制字符")
+	case priority < 0 || priority > pool.MaxPriority:
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("分组优先级要在 0～%d 之间", pool.MaxPriority))
 	default:
-		return name, note, true
+		return name, note, priority, true
 	}
-	return "", "", false
+	return "", "", 0, false
 }
 
 // priorityInput 读 {"priority":n}，n 要在 0～pool.MaxPriority。

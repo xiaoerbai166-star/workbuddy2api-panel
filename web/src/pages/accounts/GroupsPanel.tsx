@@ -18,6 +18,8 @@ import { useConfirm } from '../../components/useConfirm'
 /** 分组名字、备注最长几个字（同 internal/panel/groups.go） */
 const NAME_MAX = 20
 const NOTE_MAX = 100
+/** 分组优先级上限（同 internal/pool/groups.go MaxPriority），下限 0 */
+const PRIORITY_MAX = 99
 
 export function GroupsPanel({ groups, onFilter }: { groups: Group[]; onFilter: (id: string) => void }) {
   const qc = useQueryClient()
@@ -51,7 +53,7 @@ export function GroupsPanel({ groups, onFilter }: { groups: Group[]; onFilter: (
           <InfoTip label="账号分组说明">
             分组用来给客户端密钥划号：密钥限定了分组，用它的请求就只用组里的号，组里的号都接不了时回 503，不借别的号；没限定的密钥照常用全部的号。{'\n'}
             一个号可以在好几个组里。号进出分组在账号详情里改，或在账号表多选后「批量操作」。{'\n'}
-            先用哪个号看号的优先级（账号详情里设），和分组无关。
+            先用哪个号：先烧 1 天内到期的积分，再看分组优先级（越小越先用，号在多个组取最小的），同层内看号优先级。
           </InfoTip>
         </span>
       }
@@ -64,7 +66,7 @@ export function GroupsPanel({ groups, onFilter }: { groups: Group[]; onFilter: (
             <Card key={g.id} variant="secondary" className="gap-2 p-4">
               <span className="truncate font-medium">{g.name}</span>
               {g.note && <span className="line-clamp-2 text-sm text-muted">{g.note}</span>}
-              <span className="text-sm">{g.accounts} 个号</span>
+              <span className="text-sm">{g.accounts} 个号 · 优先级 {g.priority ?? 0}</span>
               <span className="text-xs text-muted">{g.keys.length ? '限定它的密钥：' + g.keys.join('、') : '没有密钥限定它'}</span>
               <div className="-mx-1 mt-auto flex flex-wrap gap-1">
                 <Button size="sm" variant="ghost" isDisabled={g.accounts === 0} onPress={() => onFilter(g.id)}>筛选</Button>
@@ -102,15 +104,20 @@ function GroupEditor({ target, onClose, onSaved }: { target: Group | 'new' | nul
 function EditorBody({ editing, onClose, onSaved }: { editing: Group | null; onClose: () => void; onSaved: () => void }) {
   const [name, setName] = useState(editing?.name ?? '')
   const [note, setNote] = useState(editing?.note ?? '')
+  const [priority, setPriority] = useState(String(editing?.priority ?? 0))
   const [saving, setSaving] = useState(false)
   const trimmed = name.trim()
+  const prioNum = priority.trim() === '' ? 0 : Number(priority)
+  const prioErr = priority.trim() !== '' && (!Number.isInteger(prioNum) || prioNum < 0 || prioNum > PRIORITY_MAX)
+    ? `0～${PRIORITY_MAX} 的整数`
+    : ''
   const nameErr = name !== '' && !trimmed ? '名字不能为空' : [...trimmed].length > NAME_MAX ? `最多 ${NAME_MAX} 个字` : ''
   const noteErr = [...note.trim()].length > NOTE_MAX ? `最多 ${NOTE_MAX} 个字` : ''
 
   const save = async () => {
     setSaving(true)
     try {
-      await post(editing ? `groups/${encodeURIComponent(editing.id)}` : 'groups', { name: trimmed, note: note.trim() })
+      await post(editing ? `groups/${encodeURIComponent(editing.id)}` : 'groups', { name: trimmed, note: note.trim(), priority: prioNum })
       toast.success(editing ? `分组「${trimmed}」已保存` : `分组「${trimmed}」已建好`)
       onSaved()
       onClose()
@@ -134,10 +141,15 @@ function EditorBody({ editing, onClose, onSaved }: { editing: Group | null; onCl
           <Input placeholder="可选：这组号拿来做什么" />
           {noteErr && <FieldError>{noteErr}</FieldError>}
         </TextField>
+        <TextField value={priority} onChange={setPriority} isInvalid={!!prioErr}>
+          <Label>优先级</Label>
+          <Input placeholder="0（默认）" inputMode="numeric" />
+          {prioErr ? <FieldError>{prioErr}</FieldError> : <Description>0～{PRIORITY_MAX}，越小越先用；号在多个组里取最小的那个，留空 = 0。</Description>}
+        </TextField>
       </Modal.Body>
       <Modal.Footer>
         <Button variant="tertiary" onPress={onClose}>取消</Button>
-        <BusyButton busy={saving} isDisabled={!trimmed || !!nameErr || !!noteErr} onPress={() => void save()}>{editing ? '保存' : '建好'}</BusyButton>
+        <BusyButton busy={saving} isDisabled={!trimmed || !!nameErr || !!noteErr || !!prioErr} onPress={() => void save()}>{editing ? '保存' : '建好'}</BusyButton>
       </Modal.Footer>
     </>
   )

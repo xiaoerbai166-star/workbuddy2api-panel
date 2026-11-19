@@ -387,7 +387,7 @@ func Default() *Config {
 	c.Pool.IdleWeightPerHour = 0.5
 	c.Pool.IdleWeightMax = 5.0
 	c.Pool.PreferExpiring = true
-	c.Pool.ExpiringSoon = "168h" // 快过期窗口默认 7 天：官方活动奖励积分多在两周内过期
+	c.Pool.ExpiringSoon = "24h" // 快过期窗口默认 1 天：优先烧 1 天内到期的积分，避免过期作废
 	// costTier 探索默认 30m（issue #136：垄断破除 + 搭车改道零新增请求）；"0" 关停。
 	c.Pool.CostExploreInterval = "30m"
 	c.Pool.RestrictionWaveThreshold = 2
