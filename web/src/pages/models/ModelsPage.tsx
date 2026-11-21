@@ -12,7 +12,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { dateTime, fmtK, timeMs } from '../../lib/format'
 import {
   EMPTY_MODEL_FILTER, filterModels, hiddenFromConfig, hiddenModelSet, modelAvailability, probeFor, type Capability, type EffortFilter,
-  type ModelAvailability, type ModelFilter, type ModelSort, type PromoFilter, type RealmFilter,
+  type HiddenFilter, type ModelAvailability, type ModelFilter, type ModelSort, type PromoFilter, type RealmFilter,
 } from '../../lib/models'
 import { qk, useConfig, useModels, useOverview, useProbes, useRecentRequests } from '../../lib/queries'
 import type { Model, Probe } from '../../lib/types'
@@ -183,7 +183,7 @@ export function ModelsPage() {
   const filtered = JSON.stringify(filter) !== JSON.stringify(EMPTY_MODEL_FILTER)
 
   const list = useMemo(() => models.data?.models || [], [models.data])
-  const shown = useMemo(() => filterModels(list, filter, sort), [list, filter, sort])
+  const shown = useMemo(() => filterModels(list, filter, sort, hidden), [list, filter, sort, hidden])
   const pr = probes.data?.probes || {}
   const hit = list.filter((m) => probeFor(pr, m.id)).length
 
@@ -220,6 +220,12 @@ export function ModelsPage() {
             <ToggleButton id="all">全部</ToggleButton>
             <ToggleButton id="cn"><ToggleButtonGroup.Separator />国内版</ToggleButton>
             <ToggleButton id="global"><ToggleButtonGroup.Separator />国际版</ToggleButton>
+          </ToggleButtonGroup>
+          <ToggleButtonGroup aria-label="按隐藏筛选" size="sm" selectionMode="single" disallowEmptySelection
+            selectedKeys={[filter.hidden]} onSelectionChange={(k) => set('hidden', ([...k][0] as HiddenFilter) ?? 'all')}>
+            <ToggleButton id="all">全部模型</ToggleButton>
+            <ToggleButton id="hidden"><ToggleButtonGroup.Separator />隐藏模型</ToggleButton>
+            <ToggleButton id="visible"><ToggleButtonGroup.Separator />未隐藏</ToggleButton>
           </ToggleButtonGroup>
           <ToggleButtonGroup aria-label="按能力筛选" size="sm" selectionMode="multiple"
             selectedKeys={filter.caps} onSelectionChange={(k) => set('caps', [...k] as Capability[])}>

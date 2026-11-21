@@ -41,6 +41,17 @@ describe('models', () => {
     expect(filterModels(withEnterprise, { ...EMPTY_MODEL_FILTER, q: '企业专属' }).map((m) => m.id)).toEqual(['cn:claude-sonnet'])
   })
 
+  it('按隐藏筛选：只看隐藏 / 只看未隐藏 / 全部（不传集合时按没隐藏判）', () => {
+    const hidden = hiddenModelSet(['glm-5.2', 'global:gpt-5'])
+    const f = (x: Partial<ModelFilter>) =>
+      filterModels(list, { ...EMPTY_MODEL_FILTER, ...x }, 'default', hidden).map((m) => m.id)
+    expect(f({ hidden: 'all' })).toEqual(['cn:glm-5.2', 'cn:hunyuan', 'global:gpt-5'])
+    expect(f({ hidden: 'hidden' })).toEqual(['cn:glm-5.2', 'global:gpt-5'])
+    expect(f({ hidden: 'visible' })).toEqual(['cn:hunyuan'])
+    // 没传隐藏集合：全部当没隐藏
+    expect(filterModels(list, { ...EMPTY_MODEL_FILTER, hidden: 'hidden' })).toEqual([])
+  })
+
   it('条件查询：域 / 能力 / 档位 / 价格 / 关键词（空格分词 AND）', () => {
     expect(ids({ realm: 'cn' })).toEqual(['cn:glm-5.2', 'cn:hy3', 'cn:auto'])
     expect(ids({ caps: ['tools'] })).toEqual(['cn:glm-5.2', 'cn:hy3', 'cn:auto'])

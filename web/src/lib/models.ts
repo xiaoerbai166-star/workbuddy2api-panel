@@ -7,6 +7,8 @@
 import type { Model, ModelLockRow, Probe, RequestEvent } from './types'
 
 export type RealmFilter = 'all' | 'cn' | 'global'
+/** all = 隐藏的和没隐藏的都看；hidden = 只看 models.hidden 里的；visible = 只看对外列出的 */
+export type HiddenFilter = 'all' | 'hidden' | 'visible'
 export type Capability = 'tools' | 'vision' | 'reasoning' | 'default'
 /** any = 有可调档位（任意一档）；off = 可以关闭思考 */
 export type EffortFilter = '' | 'any' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -22,9 +24,11 @@ export interface ModelFilter {
   caps: Capability[]
   effort: EffortFilter
   promo: PromoFilter
+  /** 按 models.hidden 过滤；需要调用方把隐藏集合传进来（filterModels 的第 4 个参数） */
+  hidden: HiddenFilter
 }
 
-export const EMPTY_MODEL_FILTER: ModelFilter = { q: '', realm: 'all', caps: [], effort: '', promo: '' }
+export const EMPTY_MODEL_FILTER: ModelFilter = { q: '', realm: 'all', caps: [], effort: '', promo: '', hidden: 'all' }
 
 /** 模型 id 带域前缀（cn:glm-5.2 / global:gpt-5），就是调用时要填的完整 model 值 */
 export const modelRealm = (id: string) => (id.startsWith('global:') ? 'global' : id.startsWith('cn:') ? 'cn' : '')
@@ -40,8 +44,11 @@ function searchText(m: Model): string {
   return [m.id, m.name, m.vendor, m.description, (m.tags || []).join(' '), m.enterprise_only ? '企业专属' : ''].filter(Boolean).join(' ').toLowerCase()
 }
 
-export function matchModel(m: Model, f: ModelFilter): boolean {
+/** hidden：models.hidden 归一后的集合（hiddenModelSet 的结果）；不传就按「没隐藏」判 */
+export function matchModel(m: Model, f: ModelFilter, hidden?: Set<string>): boolean {
   if (f.realm !== 'all' && modelRealm(m.id) !== f.realm) return false
+  if (f.hidden === 'hidden' && !hidden?.has(m.id)) return false
+  if (f.hidden === 'visible' && hidden?.has(m.id)) return false
   if (f.caps.some((c) => !hasCapability(m, c))) return false
   const efforts = m.supported_efforts || []
   if (f.effort === 'any' && !efforts.length) return false
@@ -74,8 +81,8 @@ export function sortModels(list: Model[], sort: ModelSort): Model[] {
   return out
 }
 
-export const filterModels = (list: Model[], f: ModelFilter, sort: ModelSort = 'default') =>
-  sortModels(list.filter((m) => matchModel(m, f)), sort)
+export const filterModels = (list: Model[], f: ModelFilter, sort: ModelSort = 'default', hidden?: Set<string>) =>
+  sortModels(list.filter((m) => matchModel(m, f, hidden)), sort)
 
 /** 探测键带域前缀（cn:glm-5.2），按「精确命中或 :后缀」关联到模型（与旧版口径一致） */
 export function probeFor(probes: Record<string, Probe>, id: string): Probe | undefined {
