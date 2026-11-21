@@ -516,5 +516,30 @@ func (p *Panel) projects(w http.ResponseWriter, r *http.Request) {
 			Models   string  `json:"models"`
 		}{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": out, "total_credit": total, "total_sessions": len(rows), "scanning": wbchatScanning.Load()})
+	writeJSON(w, http.StatusOK, map[string]any{"entries": out, "total_credit": total, "total_sessions": len(rows), "scanning": wbchatScanning.Load(), "dsh": p.dshProjectsPayload()})
+}
+
+// dshProjectsPayload 「按项目消耗」的 DSH 侧：按工作区(cwd)聚合的会话数与 token，
+// 积分用实测费率折算为估算值（DSH 自身不记积分）。扫描是后台异步的，
+// 首次调用可能返回空表 + scanning=true，前端轮询刷新。
+func (p *Panel) dshProjectsPayload() map[string]any {
+	rows := scanDshSessions(dshSessionsDir(), p.dshCachePath())
+	if rows == nil {
+		return map[string]any{
+			"entries": []dshProject{}, "total_credit": 0.0,
+			"total_sessions": 0, "total_tokens": 0, "scanning": dshScanning.Load(),
+		}
+	}
+	rows, totalCredit := p.applyDshCredit(rows)
+	var totalSessions int
+	var totalTokens int64
+	for _, r := range rows {
+		totalSessions += r.Sessions
+		totalTokens += r.Tokens
+	}
+	return map[string]any{
+		"entries": rows, "total_credit": totalCredit,
+		"total_sessions": totalSessions, "total_tokens": totalTokens,
+		"scanning": dshScanning.Load(),
+	}
 }
